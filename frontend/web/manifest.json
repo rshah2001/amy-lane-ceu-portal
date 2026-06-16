@@ -1,0 +1,10 @@
+{
+  "name": "CEU Compliance Portal",
+  "short_name": "CEU Portal",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#F5F7FA",
+  "theme_color": "#17324D",
+  "description": "Continuing education compliance and certificate automation."
+}
+

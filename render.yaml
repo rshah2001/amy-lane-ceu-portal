@@ -1,0 +1,42 @@
+# Render blueprint for the CEU portal backend (FastAPI).
+# Frontend is deployed separately on Vercel; database on Supabase.
+# Deploy: push this repo to GitHub, then "New + > Blueprint" in Render and pick it.
+services:
+  - type: web
+    name: ceu-portal-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      # Generate a strong value: `python -c "import secrets;print(secrets.token_urlsafe(48))"`
+      - key: SECRET_KEY
+        generateValue: true
+      # From Supabase: Project Settings > Database > Connection string (URI).
+      # Convert the postgresql:// prefix to postgresql+psycopg:// for SQLAlchemy.
+      - key: DATABASE_URL
+        sync: false
+      # The Vercel frontend origin(s), comma-separated. Set after the frontend deploys.
+      - key: BACKEND_CORS_ORIGINS
+        sync: false
+      - key: PUBLIC_FRONTEND_URL
+        sync: false
+      - key: EMAIL_DELIVERY_MODE
+        value: smtp
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: RETENTION_YEARS
+        value: "7"
+      - key: STORAGE_DIR
+        value: /app/storage
