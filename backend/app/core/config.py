@@ -1,7 +1,7 @@
+import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AnyHttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,7 +11,9 @@ class Settings(BaseSettings):
     secret_key: str = "change-this-secret-in-production"
     access_token_expire_minutes: int = 480
     database_url: str = "postgresql+psycopg://ceu_user:ceu_password@localhost:5432/ceu_compliance"
-    backend_cors_origins: list[str | AnyHttpUrl] = ["http://localhost:5173"]
+    # Plain string so pydantic-settings never tries to JSON-decode it from the
+    # environment; parsed into a list by the `cors_origins` property below.
+    backend_cors_origins: str = "http://localhost:5173"
     storage_dir: Path = Path("storage")
     certificate_issuer_name: str = "Continuing Education Compliance Team"
     email_delivery_mode: str = "log"
@@ -28,12 +30,14 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    @field_validator("backend_cors_origins", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
+    @property
+    def cors_origins(self) -> list[str]:
+        # Accept either a JSON array (["a","b"]) or a plain comma-separated
+        # string (a,b) so both .env and host env-var conventions work.
+        text = self.backend_cors_origins.strip()
+        if text.startswith("["):
+            return json.loads(text)
+        return [origin.strip() for origin in text.split(",") if origin.strip()]
 
     @property
     def uploads_dir(self) -> Path:
