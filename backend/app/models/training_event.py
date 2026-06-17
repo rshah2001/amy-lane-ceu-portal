@@ -28,6 +28,7 @@ class TrainingEvent(TimestampMixin, Base):
     survey_questions: Mapped[list[dict]] = mapped_column(JSON, default=list)
     test_mode: Mapped[str] = mapped_column(String(30), default="external")
     test_token: Mapped[str | None] = mapped_column(String(120), unique=True, index=True)
+    checkin_token: Mapped[str | None] = mapped_column(String(120), unique=True, index=True)
     test_questions: Mapped[list[dict]] = mapped_column(JSON, default=list)
     certificate_title: Mapped[str] = mapped_column(String(255), default="Certificate of Completion")
     certificate_fields: Mapped[dict] = mapped_column(JSON, default=dict)

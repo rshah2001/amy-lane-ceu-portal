@@ -33,6 +33,11 @@ class EventDetailPage extends StatelessWidget {
     downloadBytes(bytes, '${event.title}-post-test-qr.png', 'image/png');
   }
 
+  Future<void> downloadCheckinQr() async {
+    final bytes = await session.api.download('/events/${event.id}/checkin-qr');
+    downloadBytes(bytes, '${event.title}-checkin-qr.png', 'image/png');
+  }
+
   Future<void> distribute(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('Sending post-test and survey links to registered attendees...')));
@@ -63,6 +68,11 @@ class EventDetailPage extends StatelessWidget {
     if (event.testMode == 'external') return event.postTestUrl;
     if (event.testToken == null || _appOrigin == null) return null;
     return '$_appOrigin/?test=${event.testToken}';
+  }
+
+  String? get checkinLink {
+    if (event.checkinToken == null || _appOrigin == null) return null;
+    return '$_appOrigin/?checkin=${event.checkinToken}';
   }
 
   String? get surveyLink {
@@ -110,7 +120,6 @@ class EventDetailPage extends StatelessWidget {
                 const SizedBox(height: 16),
                 Card(child: Padding(padding: const EdgeInsets.all(22), child: Text(event.description!))),
               ],
-              if (isAdmin) ...[
               const SizedBox(height: 24),
               Card(
                 child: Padding(
@@ -124,6 +133,12 @@ class EventDetailPage extends StatelessWidget {
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           const Text('Participant links', style: TextStyle(fontWeight: FontWeight.w700)),
+                          if (checkinLink != null)
+                            OutlinedButton.icon(
+                              onPressed: downloadCheckinQr,
+                              icon: const Icon(Icons.how_to_reg_outlined),
+                              label: const Text('Download check-in QR'),
+                            ),
                           if (hasTest)
                             OutlinedButton.icon(
                               onPressed: downloadTestQr,
@@ -140,11 +155,16 @@ class EventDetailPage extends StatelessWidget {
                             icon: const Icon(Icons.forward_to_inbox_outlined),
                             label: const Text('Email links to attendees'),
                           ),
-                          StatusBadge('CERTIFICATE TEMPLATE V${event.certificateTemplateVersion}', tone: BadgeTone.info),
+                          if (isAdmin)
+                            StatusBadge('CERTIFICATE TEMPLATE V${event.certificateTemplateVersion}', tone: BadgeTone.info),
                         ],
                       ),
-                      if (testLink != null) ...[
+                      if (checkinLink != null) ...[
                         const SizedBox(height: 14),
+                        _LinkRow(label: 'Self check-in link', url: checkinLink!),
+                      ],
+                      if (testLink != null) ...[
+                        const SizedBox(height: 8),
                         _LinkRow(
                           label: event.testMode == 'internal' ? 'Post-test link' : 'External post-test',
                           url: testLink!,
@@ -161,10 +181,9 @@ class EventDetailPage extends StatelessWidget {
                   ),
                 ),
               ),
-              if (event.testMode == 'internal' && event.testQuestions.isNotEmpty) ...[
+              if (isAdmin && event.testMode == 'internal' && event.testQuestions.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 _QuestionsCard(questions: event.testQuestions),
-              ],
               ],
               const SizedBox(height: 24),
               Text('Workflow', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),

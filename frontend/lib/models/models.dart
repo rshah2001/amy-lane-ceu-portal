@@ -36,6 +36,7 @@ class TrainingEvent {
     this.postTestUrl,
     this.testMode = 'external',
     this.testToken,
+    this.checkinToken,
     this.testQuestions = const [],
     this.surveyMode = 'internal',
     this.surveyRequired = false,
@@ -62,6 +63,7 @@ class TrainingEvent {
         postTestUrl: json['post_test_url'] as String?,
         testMode: json['test_mode'] as String? ?? 'external',
         testToken: json['test_token'] as String?,
+        checkinToken: json['checkin_token'] as String?,
         testQuestions: (json['test_questions'] as List?)?.cast<Map<String, dynamic>>() ?? const [],
         surveyMode: json['survey_mode'] as String? ?? 'internal',
         surveyRequired: json['survey_required'] as bool? ?? false,
@@ -87,6 +89,7 @@ class TrainingEvent {
   final String? postTestUrl;
   final String testMode;
   final String? testToken;
+  final String? checkinToken;
   final List<Map<String, dynamic>> testQuestions;
   final String surveyMode;
   final bool surveyRequired;

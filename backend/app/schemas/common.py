@@ -84,6 +84,7 @@ class EventOut(ORMModel):
     post_test_url: str | None
     test_mode: str
     test_token: str | None
+    checkin_token: str | None
     test_questions: list
     survey_mode: str
     survey_required: bool
@@ -146,6 +147,18 @@ class CertificateOut(BaseModel):
     sent_at: datetime | None
     last_sent_to: str | None
     template_version: int
+
+
+class PublicCheckinOut(BaseModel):
+    event_title: str
+    event_date: date
+    presenter_name: str | None
+    location: str | None = None
+
+
+class PublicCheckinSubmission(BaseModel):
+    full_name: str = Field(min_length=2, max_length=255)
+    email: EmailStr
 
 
 class PublicSurveyOut(BaseModel):

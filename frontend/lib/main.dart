@@ -7,6 +7,7 @@ import 'models/models.dart';
 import 'pages/attendee_search_page.dart';
 import 'pages/audit_reports_page.dart';
 import 'pages/certificate_center_page.dart';
+import 'pages/checkin_page.dart';
 import 'pages/compliance_page.dart';
 import 'pages/create_event_page.dart';
 import 'pages/dashboard_page.dart';
@@ -51,7 +52,8 @@ class _CeuPortalAppState extends State<CeuPortalApp> {
     final params = Uri.base.queryParameters;
     final testToken = params['test'];
     final surveyToken = params['survey'];
-    if (testToken != null || surveyToken != null || params.containsKey('verify')) {
+    final checkinToken = params['checkin'];
+    if (testToken != null || surveyToken != null || checkinToken != null || params.containsKey('verify')) {
       return MaterialApp(
         title: 'CEU Compliance Portal',
         debugShowCheckedModeBanner: false,
@@ -70,7 +72,14 @@ class _CeuPortalAppState extends State<CeuPortalApp> {
                     prefillName: params['name'],
                     prefillEmail: params['email'],
                   )
-                : VerificationPage(api: widget.session.api, initialNumber: params['verify']),
+                : checkinToken != null
+                    ? CheckinPage(
+                        api: widget.session.api,
+                        token: checkinToken,
+                        prefillName: params['name'],
+                        prefillEmail: params['email'],
+                      )
+                    : VerificationPage(api: widget.session.api, initialNumber: params['verify']),
       );
     }
     return MaterialApp.router(
