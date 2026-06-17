@@ -37,6 +37,10 @@ def _send_via_resend(recipient: str, subject: str, body: str, pdf_path: Path | N
         headers={
             "Authorization": f"Bearer {settings.resend_api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Resend is behind Cloudflare, which 403s the default "Python-urllib"
+            # User-Agent (error 1010). A normal UA passes.
+            "User-Agent": "Mozilla/5.0 (compatible; CEU-Portal/1.0; +https://ceu-portal.vercel.app)",
         },
         method="POST",
     )
