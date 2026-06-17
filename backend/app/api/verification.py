@@ -11,6 +11,7 @@ from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
 from app.schemas.common import VerificationOut
 from app.services.audit import record_audit
+from app.services.certificates import generate_certificate_pdf
 from app.services.compliance import lifecycle_status
 
 router = APIRouter(prefix="/public/verify", tags=["Verification"])
@@ -52,8 +53,12 @@ def download_verified_certificate(
     certificate_number: str, db: Session = Depends(get_db)
 ) -> FileResponse:
     certificate = _load(db, certificate_number)
-    if not certificate or not Path(certificate.pdf_path).exists():
+    if not certificate:
         raise HTTPException(status_code=404, detail="Certificate not found")
+    path = Path(certificate.pdf_path)
+    if not path.exists():
+        # Ephemeral-disk safe: re-create the PDF from its immutable data.
+        generate_certificate_pdf(certificate.event_attendee, certificate.certificate_number, output_path=path)
     # First public fetch marks the certificate as downloaded (truthful lifecycle).
     if not certificate.downloaded_at:
         certificate.downloaded_at = datetime.now(timezone.utc)
@@ -67,7 +72,7 @@ def download_verified_certificate(
         )
         db.commit()
     return FileResponse(
-        certificate.pdf_path,
+        path,
         media_type="application/pdf",
         filename=f"{certificate.certificate_number}.pdf",
     )
