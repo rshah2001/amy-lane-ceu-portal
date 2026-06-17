@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     smtp_username: str | None = None
     smtp_password: str | None = None
     smtp_from: str = "certificates@example.com"
+    # Resend HTTPS email API (used when EMAIL_DELIVERY_MODE=resend; works where
+    # outbound SMTP is blocked, e.g. Render). resend_from must be a verified
+    # sender/domain, or "onboarding@resend.dev" for test sends to your own email.
+    resend_api_key: str | None = None
+    resend_from: str = "CEU Portal <onboarding@resend.dev>"
     retention_years: int = 7
     public_frontend_url: str = "http://127.0.0.1:8080"
     survey_ai_enabled: bool = False

@@ -1,5 +1,9 @@
+import base64
+import json
 import logging
 import smtplib
+import urllib.error
+import urllib.request
 from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import urlencode
@@ -10,13 +14,42 @@ from app.models.training_event import TrainingEvent
 
 logger = logging.getLogger("app.emailer")
 
+RESEND_ENDPOINT = "https://api.resend.com/emails"
 
-def _deliver(recipient: str, subject: str, body: str) -> str:
-    """Send a plain-text email, or write it to the server log in log mode."""
-    message_id = f"log-{uuid4()}"
-    if settings.email_delivery_mode == "log":
-        logger.info("[log mode] To: %s | Subject: %s\n%s", recipient, subject, body)
-        return message_id
+
+def _send_via_resend(recipient: str, subject: str, body: str, pdf_path: Path | None = None) -> str:
+    """Send over Resend's HTTPS API (works where outbound SMTP is blocked, e.g. Render)."""
+    if not settings.resend_api_key:
+        raise RuntimeError("RESEND_API_KEY is required when EMAIL_DELIVERY_MODE is resend")
+    payload: dict = {
+        "from": settings.resend_from,
+        "to": [recipient],
+        "subject": subject,
+        "text": body,
+    }
+    if pdf_path is not None:
+        payload["attachments"] = [
+            {"filename": pdf_path.name, "content": base64.b64encode(pdf_path.read_bytes()).decode()}
+        ]
+    request = urllib.request.Request(
+        RESEND_ENDPOINT,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {settings.resend_api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        raise RuntimeError(f"Resend API error {exc.code}: {detail}") from exc
+    return result.get("id", f"resend-{uuid4()}")
+
+
+def _send_via_smtp(recipient: str, subject: str, body: str, pdf_path: Path | None = None) -> str:
     if not settings.smtp_host:
         raise RuntimeError("SMTP_HOST is required when EMAIL_DELIVERY_MODE is smtp")
     message = EmailMessage()
@@ -24,12 +57,32 @@ def _deliver(recipient: str, subject: str, body: str) -> str:
     message["From"] = settings.smtp_from
     message["To"] = recipient
     message.set_content(body)
+    if pdf_path is not None:
+        message.add_attachment(
+            pdf_path.read_bytes(), maintype="application", subtype="pdf", filename=pdf_path.name
+        )
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as smtp:
         smtp.starttls()
         if settings.smtp_username and settings.smtp_password:
             smtp.login(settings.smtp_username, settings.smtp_password)
         smtp.send_message(message)
-    return message_id
+    return f"smtp-{uuid4()}"
+
+
+def _deliver(recipient: str, subject: str, body: str, pdf_path: Path | None = None) -> str:
+    """Route an email through the configured delivery mode: log / resend / smtp."""
+    mode = settings.email_delivery_mode
+    if mode == "log":
+        logger.info(
+            "[log mode] To: %s | Subject: %s%s",
+            recipient,
+            subject,
+            f" | Attachment: {pdf_path.name}" if pdf_path else "",
+        )
+        return f"log-{uuid4()}"
+    if mode == "resend":
+        return _send_via_resend(recipient, subject, body, pdf_path)
+    return _send_via_smtp(recipient, subject, body, pdf_path)
 
 
 def send_simple_email(recipient: str, subject: str, body: str) -> str:
@@ -72,33 +125,6 @@ def send_certificate_email(
     event_title: str,
     pdf_path: Path,
 ) -> str:
-    message_id = f"log-{uuid4()}"
-    if settings.email_delivery_mode == "log":
-        logger.info(
-            "[log mode] To: %s | Subject: Your CEU certificate: %s | Attachment: %s",
-            recipient, event_title, pdf_path.name,
-        )
-        return message_id
-    if not settings.smtp_host:
-        raise RuntimeError("SMTP_HOST is required when EMAIL_DELIVERY_MODE is smtp")
-
-    message = EmailMessage()
-    message["Subject"] = f"Your CEU certificate: {event_title}"
-    message["From"] = settings.smtp_from
-    message["To"] = recipient
-    message.set_content(
-        f"Hello {attendee_name},\n\nYour certificate for {event_title} is attached.\n"
-    )
-    message.add_attachment(
-        pdf_path.read_bytes(),
-        maintype="application",
-        subtype="pdf",
-        filename=pdf_path.name,
-    )
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as smtp:
-        smtp.starttls()
-        if settings.smtp_username and settings.smtp_password:
-            smtp.login(settings.smtp_username, settings.smtp_password)
-        smtp.send_message(message)
-    return message_id
-
+    subject = f"Your CEU certificate: {event_title}"
+    body = f"Hello {attendee_name},\n\nYour certificate for {event_title} is attached.\n"
+    return _deliver(recipient, subject, body, pdf_path)
