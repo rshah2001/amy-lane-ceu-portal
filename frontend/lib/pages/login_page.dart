@@ -12,8 +12,8 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final email = TextEditingController(text: 'admin@example.com');
-  final password = TextEditingController(text: 'Admin123!');
+  final email = TextEditingController();
+  final password = TextEditingController();
   bool obscure = true;
 
   @override
@@ -106,12 +106,6 @@ class _LoginPageState extends State<LoginPage> {
                         child: widget.session.loading
                             ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                             : const Text('Sign in'),
-                      ),
-                      const SizedBox(height: 18),
-                      const Text(
-                        'Seed access: admin@example.com / Admin123!',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 12, color: Color(0xFF667085)),
                       ),
                     ],
                   ),
