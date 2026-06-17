@@ -32,14 +32,9 @@ def upsert_user(db, email: str, full_name: str, role: str, password: str) -> Use
 def main() -> None:
     db = SessionLocal()
     try:
+        # Bootstrap admin only. Presenters are added by an admin from the Users
+        # page — the seed no longer creates a default presenter account.
         admin = upsert_user(db, "admin@example.com", "Avery Compliance", "admin", "Admin123!")
-        presenter = upsert_user(
-            db,
-            "presenter@example.com",
-            "Jordan Presenter",
-            "presenter",
-            "Presenter123!",
-        )
         template_path = str(CAMS_TEMPLATE) if CAMS_TEMPLATE.exists() else None
         if not db.scalar(
             select(TrainingEvent).where(
@@ -58,7 +53,7 @@ def main() -> None:
                 certificate_template_path=template_path,
                 status="review",
                 created_by_id=admin.id,
-                assigned_presenter_id=presenter.id,
+                assigned_presenter_id=None,
             )
             db.add(event)
             db.flush()
@@ -79,7 +74,6 @@ def main() -> None:
         db.commit()
         print("Seed complete")
         print("Admin: admin@example.com / Admin123!")
-        print("Presenter: presenter@example.com / Presenter123!")
     finally:
         db.close()
 
