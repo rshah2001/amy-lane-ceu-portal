@@ -1,3 +1,5 @@
+import os
+import secrets
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -5,6 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.session import SessionLocal
 from app.models.training_event import TrainingEvent
@@ -14,10 +17,10 @@ from app.services.audit import record_audit
 CAMS_TEMPLATE = Path(__file__).resolve().parent / "assets" / "cams_lunch_learn_cert.pdf"
 
 
-def upsert_user(db, email: str, full_name: str, role: str, password: str) -> User:
+def upsert_user(db, email: str, full_name: str, role: str, password: str) -> tuple[User, bool]:
     user = db.scalar(select(User).where(User.email == email))
     if user:
-        return user
+        return user, False
     user = User(
         email=email,
         full_name=full_name,
@@ -26,7 +29,19 @@ def upsert_user(db, email: str, full_name: str, role: str, password: str) -> Use
     )
     db.add(user)
     db.flush()
-    return user
+    return user, True
+
+
+def _bootstrap_admin_password() -> str:
+    # A fixed password is only acceptable for local development. In production
+    # the bootstrap admin (needed after a fresh/reset database) gets the
+    # SEED_ADMIN_PASSWORD env value, or a random one printed exactly once.
+    configured = os.environ.get("SEED_ADMIN_PASSWORD")
+    if configured:
+        return configured
+    if settings.environment == "production":
+        return secrets.token_urlsafe(16)
+    return "Admin123!"
 
 
 def main() -> None:
@@ -34,7 +49,10 @@ def main() -> None:
     try:
         # Bootstrap admin only. Presenters are added by an admin from the Users
         # page — the seed no longer creates a default presenter account.
-        admin = upsert_user(db, "admin@example.com", "Avery Compliance", "admin", "Admin123!")
+        admin_password = _bootstrap_admin_password()
+        admin, admin_created = upsert_user(
+            db, "admin@example.com", "Avery Compliance", "admin", admin_password
+        )
         template_path = str(CAMS_TEMPLATE) if CAMS_TEMPLATE.exists() else None
         if not db.scalar(
             select(TrainingEvent).where(
@@ -75,7 +93,10 @@ def main() -> None:
                 ]
         db.commit()
         print("Seed complete")
-        print("Admin: admin@example.com / Admin123!")
+        if admin_created:
+            # Printed once at creation so a fresh deployment isn't locked out;
+            # change it immediately from the Users page.
+            print(f"Bootstrap admin created: admin@example.com / {admin_password}")
     finally:
         db.close()
 
