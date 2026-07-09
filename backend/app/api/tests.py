@@ -111,7 +111,7 @@ def test_qr(
     event = get_visible_event(db, event_id, current_user)
     if event.test_mode == "external" and event.post_test_url:
         url = event.post_test_url
-    elif event.test_token:
+    elif event.test_mode == "internal" and event.test_token and event.test_questions:
         url = f"{settings.public_frontend_url}/?test={event.test_token}"
     else:
         raise HTTPException(

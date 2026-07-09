@@ -114,6 +114,35 @@ class EventDetailPage extends StatelessWidget {
 
   Future<void> distribute(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
+    // This sends real email, so always confirm first — with the recipient
+    // count from the event summary when it can be fetched.
+    int? registered;
+    try {
+      final summary = await session.api.get('/events/${event.id}/summary') as Map<String, dynamic>;
+      registered = summary['registered'] as int?;
+    } catch (_) {
+      registered = null; // still confirm, just without the count
+    }
+    if (!context.mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Email links to attendees?'),
+        content: SizedBox(
+          width: 420,
+          child: Text(
+            registered == null
+                ? 'This emails the post-test and survey links to every registered or checked-in attendee with an email address. Send?'
+                : 'This emails the post-test and survey links to the $registered registered/checked-in attendee${registered == 1 ? '' : 's'} with an email address. Send?',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Send')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
     messenger.showSnackBar(const SnackBar(content: Text('Sending post-test and survey links to registered attendees...')));
     try {
       final result = await session.api.post('/events/${event.id}/distribute') as Map<String, dynamic>;
@@ -157,6 +186,7 @@ class EventDetailPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final (statusLabel, statusTone) = eventStatusDisplay(event.status);
     return SingleChildScrollView(
       padding: pagePadding,
       child: Center(
@@ -182,7 +212,7 @@ class EventDetailPage extends StatelessWidget {
                       label: const Text('Delete'),
                     ),
                   ],
-                  StatusBadge(event.status.toUpperCase(), tone: BadgeTone.warning),
+                  StatusBadge(statusLabel, tone: statusTone),
                 ],
               ),
               const SizedBox(height: 22),
@@ -204,7 +234,11 @@ class EventDetailPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              _SummaryStrip(session: session, eventId: event.id),
+              _SummaryStrip(
+                session: session,
+                eventId: event.id,
+                onOpenCompliance: () => onNavigate('compliance'),
+              ),
               if (event.description != null) ...[
                 const SizedBox(height: 16),
                 Card(child: Padding(padding: const EdgeInsets.all(22), child: Text(event.description!))),
@@ -487,9 +521,10 @@ class _QuestionsCard extends StatelessWidget {
 }
 
 class _SummaryStrip extends StatelessWidget {
-  const _SummaryStrip({required this.session, required this.eventId});
+  const _SummaryStrip({required this.session, required this.eventId, required this.onOpenCompliance});
   final SessionController session;
   final int eventId;
+  final VoidCallback onOpenCompliance;
 
   @override
   Widget build(BuildContext context) {
@@ -519,15 +554,17 @@ class _SummaryStrip extends StatelessWidget {
           return const Card(child: Padding(padding: EdgeInsets.all(22), child: LinearProgressIndicator()));
         }
         final s = EventSummary.fromJson(snapshot.data as Map<String, dynamic>);
-        final items = <(String, String)>[
-          ('Attendees', '${s.totalAttendees}'),
-          ('Attended', '${s.attended}'),
-          ('Passed test', '${s.testPassed}'),
-          ('Survey done', '${s.surveyCompleted}'),
-          ('Eligible', '${s.eligible}'),
-          ('Approved', '${s.approved}'),
-          ('Certs sent', '${s.certificatesSent}/${s.certificatesGenerated}'),
-          ('Compliance', '${s.complianceRate.toStringAsFixed(0)}%'),
+        // The third element marks figures that answer to the compliance
+        // review, so tapping them opens it directly.
+        final items = <(String, String, bool)>[
+          ('Attendees', '${s.totalAttendees}', false),
+          ('Attended', '${s.attended}', false),
+          ('Passed test', '${s.testPassed}', false),
+          ('Survey done', '${s.surveyCompleted}', false),
+          ('Eligible', '${s.eligible}', true),
+          ('Approved', '${s.approved}', true),
+          ('Certs sent', '${s.certificatesSent}/${s.certificatesGenerated}', true),
+          ('Compliance', '${s.complianceRate.toStringAsFixed(0)}%', false),
         ];
         return Card(
           child: Padding(
@@ -537,19 +574,43 @@ class _SummaryStrip extends StatelessWidget {
               runSpacing: 16,
               children: [
                 for (final item in items)
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(item.$2, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Color(0xFF17324D))),
-                      const SizedBox(height: 2),
-                      Text(item.$1, style: const TextStyle(fontSize: 12, color: Color(0xFF667085))),
-                    ],
-                  ),
+                  if (item.$3)
+                    Tooltip(
+                      message: 'Open compliance review',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: onOpenCompliance,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: _SummaryFigure(value: item.$2, label: item.$1),
+                        ),
+                      ),
+                    )
+                  else
+                    _SummaryFigure(value: item.$2, label: item.$1),
               ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+class _SummaryFigure extends StatelessWidget {
+  const _SummaryFigure({required this.value, required this.label});
+  final String value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Color(0xFF17324D))),
+        const SizedBox(height: 2),
+        Text(label, style: const TextStyle(fontSize: 12, color: Color(0xFF667085))),
+      ],
     );
   }
 }

@@ -107,6 +107,69 @@ class _CompliancePageState extends State<CompliancePage> {
     }
   }
 
+  // Sending certificates is real email, so the bulk action confirms with the
+  // exact recipient count before anything goes out.
+  Future<void> confirmSendAll() async {
+    final pending = (records ?? const <ComplianceRecord>[])
+        .where((record) => record.certificateNumber != null && record.certificateSentAt == null)
+        .length;
+    if (pending == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No generated certificates are waiting to be emailed.')),
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Send certificates?'),
+        content: Text('Email certificates to $pending attendee${pending == 1 ? '' : 's'}?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Send')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await bulk('send-all', 'Send all');
+  }
+
+  // Undo an approval that hasn't produced a sent certificate yet, e.g. after
+  // approving the wrong person.
+  Future<void> revoke(ComplianceRecord record) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Revoke approval for ${record.fullName}?'),
+        content: const SizedBox(
+          width: 420,
+          child: Text('They move back into the review queue, and no certificate will be sent until they are approved again.'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFB42318), foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Revoke approval'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => working = true);
+    try {
+      await widget.session.api.post('/events/${widget.event.id}/compliance/approve', {
+        'event_attendee_ids': [record.id],
+        'approved': false,
+      });
+      await load();
+    } catch (exception) {
+      if (mounted) setState(() => error = exception.toString());
+    } finally {
+      if (mounted) setState(() => working = false);
+    }
+  }
+
   Future<void> bulk(String action, String label) async {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => working = true);
@@ -125,6 +188,7 @@ class _CompliancePageState extends State<CompliancePage> {
 
   @override
   Widget build(BuildContext context) {
+    final isAdmin = widget.session.user!.isAdmin;
     return Padding(
       padding: pagePadding,
       child: Center(
@@ -137,7 +201,7 @@ class _CompliancePageState extends State<CompliancePage> {
                 title: 'Compliance Review',
                 subtitle: widget.event.title,
                 actions: [
-                  if (widget.session.user!.isAdmin) ...[
+                  if (isAdmin) ...[
                     ElevatedButton.icon(
                       onPressed: selected.isEmpty || working ? null : approve,
                       icon: const Icon(Icons.verified_outlined),
@@ -148,7 +212,7 @@ class _CompliancePageState extends State<CompliancePage> {
                       onSelected: (value) => switch (value) {
                         'approve-all' => bulk('approve-all', 'Approve all eligible'),
                         'generate-all' => bulk('generate-all', 'Generate all'),
-                        'send-all' => bulk('send-all', 'Send all'),
+                        'send-all' => confirmSendAll(),
                         _ => Future<void>.value(),
                       },
                       itemBuilder: (context) => const [
@@ -195,7 +259,7 @@ class _CompliancePageState extends State<CompliancePage> {
               ),
               if (error != null) ...[
                 const SizedBox(height: 10),
-                Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                InlineAlert(message: error!, onRetry: load, onDismiss: () => setState(() => error = null)),
               ],
               const SizedBox(height: 14),
               Expanded(
@@ -211,17 +275,23 @@ class _CompliancePageState extends State<CompliancePage> {
                           : SingleChildScrollView(
                               child: SingleChildScrollView(
                                 scrollDirection: Axis.horizontal,
+                                // Compact columns (icon-only requirement checks,
+                                // reasons folded into the attendee cell, one merged
+                                // status column) so the full table fits a 1280px
+                                // screen next to the sidebar without scrolling.
                                 child: DataTable(
-                                  showCheckboxColumn: widget.session.user!.isAdmin,
-                                  columns: const [
-                                    DataColumn(label: Text('Attendee')),
-                                    DataColumn(label: Text('Attendance')),
-                                    DataColumn(label: Text('Post-test')),
-                                    DataColumn(label: Text('Survey')),
-                                    DataColumn(label: Text('Email')),
-                                    DataColumn(label: Text('Decision')),
-                                    DataColumn(label: Text('Lifecycle')),
-                                    DataColumn(label: Text('Reasons')),
+                                  showCheckboxColumn: isAdmin,
+                                  columnSpacing: 28,
+                                  dataRowMinHeight: 48,
+                                  dataRowMaxHeight: 74,
+                                  columns: [
+                                    const DataColumn(label: Text('Attendee')),
+                                    const DataColumn(label: Tooltip(message: 'Attended the session', child: Icon(Icons.event_available_outlined, size: 18, color: Color(0xFF667085)))),
+                                    const DataColumn(label: Tooltip(message: 'Post-test passed (80% or higher)', child: Icon(Icons.quiz_outlined, size: 18, color: Color(0xFF667085)))),
+                                    const DataColumn(label: Tooltip(message: 'Survey completed', child: Icon(Icons.rate_review_outlined, size: 18, color: Color(0xFF667085)))),
+                                    const DataColumn(label: Tooltip(message: 'Valid email address on file', child: Icon(Icons.alternate_email, size: 18, color: Color(0xFF667085)))),
+                                    const DataColumn(label: Text('Status')),
+                                    if (isAdmin) const DataColumn(label: Text('')),
                                   ],
                                   rows: records!
                                       .map(
@@ -229,38 +299,48 @@ class _CompliancePageState extends State<CompliancePage> {
                                           selected: selected.contains(record.id),
                                           // Admins can select ineligible rows too; approving them
                                           // asks for an explicit override confirmation.
-                                          onSelectChanged: !widget.session.user!.isAdmin || record.approved
+                                          onSelectChanged: !isAdmin || record.approved
                                               ? null
                                               : (value) => setState(() => value == true ? selected.add(record.id) : selected.remove(record.id)),
                                           cells: [
                                             DataCell(
                                               SizedBox(
-                                                width: 210,
+                                                width: 240,
                                                 child: Column(
                                                   mainAxisAlignment: MainAxisAlignment.center,
                                                   crossAxisAlignment: CrossAxisAlignment.start,
                                                   children: [
                                                     Text(record.fullName, style: const TextStyle(fontWeight: FontWeight.w600)),
                                                     Text(record.email ?? 'No email', overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFF667085))),
+                                                    if (record.reasons.isNotEmpty)
+                                                      Tooltip(
+                                                        message: record.reasons.join('\n'),
+                                                        child: Text(
+                                                          record.reasons.join(' • '),
+                                                          maxLines: 2,
+                                                          overflow: TextOverflow.ellipsis,
+                                                          style: const TextStyle(fontSize: 11, color: Color(0xFFB42318)),
+                                                        ),
+                                                      ),
                                                   ],
                                                 ),
                                               ),
                                             ),
                                             DataCell(checkIcon(record.attended)),
-                                            DataCell(Row(mainAxisSize: MainAxisSize.min, children: [checkIcon(record.testCompleted && (record.testScore ?? 0) >= 80), const SizedBox(width: 5), Text(record.testScore == null ? '—' : '${record.testScore!.toStringAsFixed(0)}%')])),
+                                            DataCell(Row(mainAxisSize: MainAxisSize.min, children: [checkIcon(record.testCompleted && (record.testScore ?? 0) >= 80), const SizedBox(width: 5), Text(record.testScore == null ? '—' : '${record.testScore!.toStringAsFixed(0)}%', style: const TextStyle(fontSize: 12))])),
                                             DataCell(checkIcon(record.surveyCompleted)),
                                             DataCell(checkIcon(record.validEmail)),
-                                            DataCell(StatusBadge(record.approved ? 'APPROVED' : record.eligible ? 'ELIGIBLE' : 'INELIGIBLE', tone: record.approved || record.eligible ? BadgeTone.success : BadgeTone.danger)),
                                             DataCell(lifecycleBadge(record.lifecycleStatus)),
-                                            DataCell(
-                                              SizedBox(
-                                                width: 270,
-                                                child: Text(
-                                                  record.reasons.isEmpty ? 'All eligibility requirements met' : record.reasons.join(' • '),
-                                                  style: TextStyle(fontSize: 12, color: record.reasons.isEmpty ? const Color(0xFF176B3A) : const Color(0xFFB42318)),
-                                                ),
+                                            if (isAdmin)
+                                              DataCell(
+                                                record.approved && record.certificateSentAt == null
+                                                    ? IconButton(
+                                                        tooltip: 'Revoke approval',
+                                                        onPressed: working ? null : () => revoke(record),
+                                                        icon: const Icon(Icons.undo, size: 18, color: Color(0xFFB42318)),
+                                                      )
+                                                    : const SizedBox.shrink(),
                                               ),
-                                            ),
                                           ],
                                         ),
                                       )

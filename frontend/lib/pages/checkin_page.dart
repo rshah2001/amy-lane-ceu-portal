@@ -187,6 +187,9 @@ class _CheckinPageState extends State<CheckinPage> {
                                     const SizedBox(height: 16),
                                     TextFormField(
                                       controller: name,
+                                      autofillHints: const [AutofillHints.name],
+                                      textCapitalization: TextCapitalization.words,
+                                      textInputAction: TextInputAction.next,
                                       decoration: const InputDecoration(labelText: 'Full name'),
                                       validator: (v) => v == null || v.trim().length < 2 ? 'Enter your name' : null,
                                     ),
@@ -194,6 +197,9 @@ class _CheckinPageState extends State<CheckinPage> {
                                     TextFormField(
                                       controller: email,
                                       keyboardType: TextInputType.emailAddress,
+                                      autofillHints: const [AutofillHints.email],
+                                      textInputAction: TextInputAction.done,
+                                      onFieldSubmitted: (_) => submit(),
                                       decoration: const InputDecoration(labelText: 'Email address'),
                                       validator: (v) => v == null || !v.contains('@') ? 'Enter a valid email' : null,
                                     ),

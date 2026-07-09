@@ -132,6 +132,12 @@ class _LoginPageState extends State<LoginPage> {
                                 ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                                 : const Text('Sign in'),
                           ),
+                          const SizedBox(height: 18),
+                          Text(
+                            'Forgot your password? Contact your NMEDA administrator.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 13, color: Colors.blueGrey.shade500),
+                          ),
                         ],
                       ),
                     ),

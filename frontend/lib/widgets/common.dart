@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../core/theme.dart';
 
@@ -224,3 +225,79 @@ const maxContentWidth = 1480.0;
 const pagePadding = EdgeInsets.all(24);
 const divider = Divider(height: 1, color: border);
 
+
+/// One place for date rendering so every page reads the same way.
+String formatDate(DateTime value) => DateFormat.yMMMd().format(value.toLocal());
+
+String formatDateTime(DateTime value) {
+  final local = value.toLocal();
+  return '${DateFormat.yMMMd().format(local)} · ${DateFormat.jm().format(local)}';
+}
+
+/// Human wording for the internal event status values. "draft" and "review"
+/// are developer jargon; Amy reads these as workflow stages.
+(String, BadgeTone) eventStatusDisplay(String status) => switch (status) {
+      'draft' => ('AWAITING DOCUMENTS', BadgeTone.info),
+      'review' => ('IN REVIEW', BadgeTone.warning),
+      _ => (status.toUpperCase(), BadgeTone.neutral),
+    };
+
+/// Dismissible, plain-language error banner: replaces the raw
+/// `exception.toString()` strings that used to sit permanently on pages.
+class InlineAlert extends StatelessWidget {
+  const InlineAlert({
+    super.key,
+    required this.message,
+    this.onRetry,
+    this.onDismiss,
+  });
+
+  final String message;
+  final VoidCallback? onRetry;
+  final VoidCallback? onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEECEB),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFF4B4AE)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline, color: Color(0xFFB42318), size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _humanize(message),
+              style: const TextStyle(color: Color(0xFFB42318), fontSize: 13),
+            ),
+          ),
+          if (onRetry != null)
+            TextButton(onPressed: onRetry, child: const Text('Retry')),
+          if (onDismiss != null)
+            IconButton(
+              onPressed: onDismiss,
+              icon: const Icon(Icons.close, size: 17, color: Color(0xFFB42318)),
+              tooltip: 'Dismiss',
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Strip the exception-class prefixes users can't act on.
+  static String _humanize(String raw) {
+    var text = raw;
+    for (final prefix in ['ApiException: ', 'ClientException: ', 'Exception: ']) {
+      if (text.startsWith(prefix)) text = text.substring(prefix.length);
+    }
+    if (text.contains('Failed to fetch')) {
+      return 'Could not reach the server. Check your connection and try again.';
+    }
+    return text;
+  }
+}

@@ -54,6 +54,16 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
 
   Future<void> submit() async {
     if (!formKey.currentState!.validate()) return;
+    // Questions are optional — only send what was actually written, but ask
+    // for at least one answer so an entirely blank survey isn't recorded.
+    final filledAnswers = {
+      for (final entry in answers.entries)
+        if (entry.value.text.trim().isNotEmpty) entry.key: entry.value.text.trim(),
+    };
+    if (filledAnswers.isEmpty) {
+      setState(() => error = 'Please answer at least one question.');
+      return;
+    }
     setState(() {
       saving = true;
       error = null;
@@ -62,7 +72,7 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
       await widget.api.post('/public/surveys/${widget.token}', {
         'full_name': name.text.trim(),
         'email': email.text.trim(),
-        'answers': {for (final entry in answers.entries) entry.key: entry.value.text.trim()},
+        'answers': filledAnswers,
       });
       if (mounted) setState(() => submitted = true);
     } catch (exception) {
@@ -119,16 +129,35 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
                                       style: const TextStyle(color: Color(0xFF667085)),
                                     ),
                                     const SizedBox(height: 24),
-                                    TextFormField(controller: name, decoration: const InputDecoration(labelText: 'Full name'), validator: (value) => value == null || value.trim().length < 2 ? 'Enter your name' : null),
+                                    TextFormField(
+                                      controller: name,
+                                      autofillHints: const [AutofillHints.name],
+                                      textCapitalization: TextCapitalization.words,
+                                      textInputAction: TextInputAction.next,
+                                      decoration: const InputDecoration(labelText: 'Full name'),
+                                      validator: (value) => value == null || value.trim().length < 2 ? 'Enter your name' : null,
+                                    ),
                                     const SizedBox(height: 14),
-                                    TextFormField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email address'), validator: emailValidator),
+                                    TextFormField(
+                                      controller: email,
+                                      keyboardType: TextInputType.emailAddress,
+                                      autofillHints: const [AutofillHints.email],
+                                      textInputAction: TextInputAction.next,
+                                      decoration: const InputDecoration(labelText: 'Email address'),
+                                      validator: emailValidator,
+                                    ),
+                                    const SizedBox(height: 18),
+                                    const Text(
+                                      'Answer as many questions as you like — every question is optional.',
+                                      style: TextStyle(fontSize: 13, color: Color(0xFF667085)),
+                                    ),
                                     for (final question in survey!['questions'] as List) ...[
                                       const SizedBox(height: 18),
                                       TextFormField(
                                         controller: answers[question['id']],
                                         maxLines: 3,
+                                        textCapitalization: TextCapitalization.sentences,
                                         decoration: InputDecoration(labelText: question['label'] as String),
-                                        validator: (value) => value == null || value.trim().isEmpty ? 'Please answer this question' : null,
                                       ),
                                     ],
                                     if (error != null) ...[

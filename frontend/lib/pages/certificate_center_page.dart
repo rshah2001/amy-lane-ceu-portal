@@ -1,6 +1,5 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 import '../core/file_download.dart';
 import '../core/session.dart';
@@ -30,6 +29,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
   String? error;
   int? workingId;
   bool uploadingTemplate = false;
+  bool bulkWorking = false;
 
   @override
   void initState() {
@@ -88,6 +88,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
 
   Future<void> preview(ComplianceRecord record) async {
     if (event == null) return;
+    final messenger = ScaffoldMessenger.of(context);
     setState(() => workingId = record.id);
     try {
       final bytes = await widget.session.api.download(
@@ -98,6 +99,9 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
         '${record.fullName}-certificate-preview.pdf',
         'application/pdf',
       );
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Preview downloaded — check your Downloads folder.')),
+      );
     } catch (exception) {
       if (mounted) setState(() => error = exception.toString());
     } finally {
@@ -105,8 +109,106 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
     }
   }
 
+  // The primary admin flow after approvals: one button that generates every
+  // missing certificate and emails everything unsent, with a confirmation
+  // first and a persistent result dialog after.
+  Future<void> generateAndSendAll() async {
+    if (event == null || records == null) return;
+    final toGenerate = records!.where((record) => record.approved && record.certificateNumber == null).length;
+    final toSend = records!.where((record) => record.approved && record.certificateSentAt == null).length;
+    if (toGenerate == 0 && toSend == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Every approved attendee already has a certificate that was sent.')),
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Generate & send all approved?'),
+        content: SizedBox(
+          width: 420,
+          child: Text(
+            'Generate certificates for $toGenerate approved attendee${toGenerate == 1 ? '' : 's'} '
+            'and email $toSend of them? Attendees without an email address are skipped.',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Generate & send')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      bulkWorking = true;
+      error = null;
+    });
+    try {
+      final generated = await widget.session.api.post('/events/${event!.id}/certificates/generate-all') as Map<String, dynamic>;
+      final sent = await widget.session.api.post('/events/${event!.id}/certificates/send-all') as Map<String, dynamic>;
+      if (!mounted) return;
+      final details = [
+        ...((generated['details'] as List?) ?? const []),
+        ...((sent['details'] as List?) ?? const []),
+      ].cast<String>();
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Certificates processed'),
+          content: SizedBox(
+            width: 440,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Generated: ${generated['processed']} new, ${generated['skipped']} already existed, ${generated['failed']} failed.'),
+                const SizedBox(height: 6),
+                Text('Emailed: ${sent['processed']} sent, ${sent['skipped']} skipped (no email address), ${sent['failed']} failed.'),
+                if (details.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  for (final line in details)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text('• $line', style: const TextStyle(fontSize: 12, color: Color(0xFFB42318))),
+                    ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            ElevatedButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Done')),
+          ],
+        ),
+      );
+      await loadRecords();
+    } catch (exception) {
+      if (mounted) setState(() => error = exception.toString());
+    } finally {
+      if (mounted) setState(() => bulkWorking = false);
+    }
+  }
+
   Future<void> uploadTemplate() async {
     if (event == null) return;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Upload certificate template'),
+        content: const SizedBox(
+          width: 420,
+          child: Text(
+            'PNG or JPG, landscape letter recommended. Replacing the template '
+            'only affects future certificates.',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Choose file')),
+        ],
+      ),
+    );
+    if (proceed != true) return;
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: const ['png', 'jpg', 'jpeg'],
@@ -248,23 +350,43 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                 title: 'Certificate Center',
                 subtitle: 'Preview, generate, send, and preserve issued certificate versions.',
                 actions: [
+                  // The everyday flow gets the primary slot; the manual-issue
+                  // escape hatch and template upload live under "More".
                   ElevatedButton.icon(
-                    onPressed: event == null ? null : issueManually,
-                    icon: const Icon(Icons.workspace_premium_outlined),
-                    label: const Text('Issue certificate'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: event == null || uploadingTemplate ? null : uploadTemplate,
-                    icon: uploadingTemplate
+                    onPressed: event == null || records == null || bulkWorking ? null : generateAndSendAll,
+                    icon: bulkWorking
                         ? const SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.image_outlined),
-                    label: Text(uploadingTemplate ? 'Uploading...' : 'Upload template'),
+                        : const Icon(Icons.send_outlined),
+                    label: Text(bulkWorking ? 'Working...' : 'Generate & send all approved'),
+                  ),
+                  PopupMenuButton<String>(
+                    enabled: event != null && !uploadingTemplate && !bulkWorking,
+                    onSelected: (value) => switch (value) {
+                      'issue' => issueManually(),
+                      'template' => uploadTemplate(),
+                      _ => Future<void>.value(),
+                    },
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(value: 'issue', child: Text('Issue certificate manually')),
+                      PopupMenuItem(value: 'template', child: Text('Upload certificate template')),
+                    ],
+                    child: IgnorePointer(
+                      child: OutlinedButton.icon(
+                        onPressed: () {},
+                        icon: uploadingTemplate
+                            ? const SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.more_horiz),
+                        label: Text(uploadingTemplate ? 'Uploading...' : 'More'),
+                      ),
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 16),
               if (events == null)
-                const LoadingPanel()
+                error != null
+                    ? InlineAlert(message: error!, onRetry: loadEvents, onDismiss: () => setState(() => error = null))
+                    : const LoadingPanel()
               else if (events!.isEmpty)
                 const Expanded(
                   child: EmptyState(
@@ -279,7 +401,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                   decoration: const InputDecoration(labelText: 'Event', prefixIcon: Icon(Icons.event_note_outlined)),
                   items: [
                     for (final candidate in events!)
-                      DropdownMenuItem(value: candidate.id, child: Text('${candidate.title} (${DateFormat.yMMMd().format(candidate.eventDate)})')),
+                      DropdownMenuItem(value: candidate.id, child: Text('${candidate.title} (${formatDate(candidate.eventDate)})')),
                   ],
                   onChanged: (id) {
                     final next = events!.firstWhere((candidate) => candidate.id == id);
@@ -290,7 +412,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                 ),
                 if (error != null) ...[
                   const SizedBox(height: 10),
-                  Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                  InlineAlert(message: error!, onRetry: loadRecords, onDismiss: () => setState(() => error = null)),
                 ],
                 const SizedBox(height: 14),
                 Expanded(
@@ -321,7 +443,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                                           DataCell(SizedBox(width: 230, child: Text(record.fullName, style: const TextStyle(fontWeight: FontWeight.w600)))),
                                           DataCell(StatusBadge(record.approved ? 'APPROVED' : 'AWAITING APPROVAL', tone: record.approved ? BadgeTone.success : BadgeTone.warning)),
                                           DataCell(Text(record.certificateNumber ?? 'Not generated')),
-                                          DataCell(Text(record.certificateSentAt == null ? 'Not sent' : DateFormat.yMd().add_jm().format(record.certificateSentAt!.toLocal()))),
+                                          DataCell(Text(record.certificateSentAt == null ? 'Not sent' : formatDateTime(record.certificateSentAt!))),
                                           DataCell(
                                             Wrap(
                                               spacing: 8,

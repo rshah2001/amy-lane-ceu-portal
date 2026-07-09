@@ -35,6 +35,7 @@ class _SettingsPageState extends State<SettingsPage> {
     if (error != null) return ErrorPanel(message: error!, onRetry: load);
     if (settings == null) return const LoadingPanel();
     final user = settings!['current_user'] as Map<String, dynamic>;
+    final isAdmin = widget.session.user!.isAdmin;
     return SingleChildScrollView(
       padding: pagePadding,
       child: Center(
@@ -43,7 +44,10 @@ class _SettingsPageState extends State<SettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const PageHeader(title: 'Settings', subtitle: 'Account and compliance environment configuration.'),
+              PageHeader(
+                title: 'Settings',
+                subtitle: isAdmin ? 'Account and compliance environment configuration.' : 'Your account.',
+              ),
               const SizedBox(height: 18),
               Card(
                 child: Column(
@@ -55,34 +59,44 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
               const SizedBox(height: 14),
-              Card(
-                child: Column(
-                  children: [
-                    const ListTile(title: Text('Compliance configuration', style: TextStyle(fontWeight: FontWeight.w700))),
-                    divider,
-                    _SettingRow(icon: Icons.business_outlined, label: 'Certificate issuer', value: settings!['organization'].toString()),
-                    divider,
-                    _SettingRow(icon: Icons.archive_outlined, label: 'Audit retention', value: '${settings!['retention_years']} years'),
-                    divider,
-                    _SettingRow(
-                      icon: Icons.outgoing_mail,
-                      label: 'Email delivery',
-                      value: '${settings!['email_delivery_mode']} (${settings!['smtp_configured'] == true ? 'SMTP configured' : 'no SMTP credentials'})',
-                    ),
-                    divider,
-                    _SettingRow(icon: Icons.cloud_outlined, label: 'Environment', value: settings!['environment'].toString()),
-                  ],
+              // Ops internals (email delivery, environment, retention) only
+              // mean something to admins; presenters just need their account.
+              if (isAdmin) ...[
+                Card(
+                  child: Column(
+                    children: [
+                      const ListTile(title: Text('Compliance configuration', style: TextStyle(fontWeight: FontWeight.w700))),
+                      divider,
+                      _SettingRow(icon: Icons.business_outlined, label: 'Certificate issuer', value: settings!['organization'].toString()),
+                      divider,
+                      _SettingRow(icon: Icons.archive_outlined, label: 'Audit retention', value: '${settings!['retention_years']} years'),
+                      divider,
+                      _SettingRow(
+                        icon: Icons.outgoing_mail,
+                        label: 'Email delivery',
+                        value: '${settings!['email_delivery_mode']} (${settings!['smtp_configured'] == true ? 'SMTP configured' : 'no SMTP credentials'})',
+                      ),
+                      divider,
+                      _SettingRow(icon: Icons.cloud_outlined, label: 'Environment', value: settings!['environment'].toString()),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 14),
+                const SizedBox(height: 14),
+              ],
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(18),
                   child: Row(
                     children: [
-                      const Icon(Icons.shield_outlined, color: Color(0xFF176B3A)),
+                      Icon(isAdmin ? Icons.shield_outlined : Icons.help_outline, color: const Color(0xFF176B3A)),
                       const SizedBox(width: 12),
-                      const Expanded(child: Text('Uploaded files, compliance decisions, certificates, delivery attempts, and audit actions are retained according to the configured policy.')),
+                      Expanded(
+                        child: Text(
+                          isAdmin
+                              ? 'Uploaded files, compliance decisions, certificates, delivery attempts, and audit actions are retained according to the configured policy.'
+                              : 'Questions about your account? Contact your NMEDA administrator.',
+                        ),
+                      ),
                       OutlinedButton.icon(onPressed: widget.session.logout, icon: const Icon(Icons.logout), label: const Text('Sign out')),
                     ],
                   ),

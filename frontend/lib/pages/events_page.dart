@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
+import 'package:go_router/go_router.dart';
 
 import '../core/session.dart';
 import '../models/models.dart';
@@ -49,6 +49,8 @@ class _EventsPageState extends State<EventsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isAdmin = widget.session.user!.isAdmin;
+    final searching = search.text.trim().isNotEmpty;
     return Padding(
       padding: pagePadding,
       child: Center(
@@ -57,7 +59,20 @@ class _EventsPageState extends State<EventsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const PageHeader(title: 'Events', subtitle: 'Create, monitor, and complete continuing education events.'),
+              PageHeader(
+                title: 'Events',
+                subtitle: isAdmin
+                    ? 'Create, monitor, and complete continuing education events.'
+                    : 'Your assigned training sessions.',
+                actions: [
+                  if (isAdmin)
+                    ElevatedButton.icon(
+                      onPressed: () => context.go('/create'),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Create event'),
+                    ),
+                ],
+              ),
               const SizedBox(height: 20),
               Row(
                 children: [
@@ -80,12 +95,34 @@ class _EventsPageState extends State<EventsPage> {
                       : events == null
                           ? const LoadingPanel()
                           : events!.isEmpty
-                              ? EmptyState(
-                                  icon: Icons.event_note_outlined,
-                                  message: search.text.trim().isEmpty ? 'No events yet' : 'No events match this search',
-                                  detail: search.text.trim().isEmpty
-                                      ? 'Create the first training event to get started.'
-                                      : 'Try a different search term.',
+                              ? Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      EmptyState(
+                                        icon: Icons.event_note_outlined,
+                                        message: searching
+                                            ? 'No events match this search'
+                                            : isAdmin
+                                                ? 'No events yet'
+                                                : 'No events assigned to you yet',
+                                        detail: searching
+                                            ? 'Try a different search term.'
+                                            : isAdmin
+                                                ? 'Create the first training event to get started.'
+                                                : 'Your NMEDA administrator will assign your session before the event date.',
+                                      ),
+                                      if (isAdmin && !searching)
+                                        Padding(
+                                          padding: const EdgeInsets.only(bottom: 24),
+                                          child: ElevatedButton.icon(
+                                            onPressed: () => context.go('/create'),
+                                            icon: const Icon(Icons.add),
+                                            label: const Text('Create event'),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
                                 )
                               : SingleChildScrollView(
                                   child: SingleChildScrollView(
@@ -104,10 +141,10 @@ class _EventsPageState extends State<EventsPage> {
                                             (event) => DataRow(
                                               cells: [
                                                 DataCell(SizedBox(width: 280, child: Text(event.title, style: const TextStyle(fontWeight: FontWeight.w600)))),
-                                                DataCell(Text(DateFormat.yMMMd().format(event.eventDate))),
+                                                DataCell(Text(formatDate(event.eventDate))),
                                                 DataCell(Text(event.location ?? 'Remote / TBD')),
                                                 DataCell(Text(event.presenterName ?? 'Not assigned')),
-                                                DataCell(StatusBadge(event.status.toUpperCase(), tone: event.status == 'review' ? BadgeTone.warning : BadgeTone.info)),
+                                                DataCell(_statusBadge(event.status)),
                                                 DataCell(IconButton(tooltip: 'Open event', onPressed: () => widget.onOpen(event), icon: const Icon(Icons.arrow_forward))),
                                               ],
                                             ),
@@ -126,3 +163,7 @@ class _EventsPageState extends State<EventsPage> {
   }
 }
 
+StatusBadge _statusBadge(String status) {
+  final (label, tone) = eventStatusDisplay(status);
+  return StatusBadge(label, tone: tone);
+}

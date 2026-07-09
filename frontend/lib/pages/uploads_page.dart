@@ -1,6 +1,5 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 import '../core/file_download.dart';
 import '../core/session.dart';
@@ -66,17 +65,90 @@ class _UploadsPageState extends State<UploadsPage> {
       error = null;
     });
     try {
-      await widget.session.api.uploadFile(
+      final response = await widget.session.api.uploadFile(
         '/events/${widget.event.id}/uploads/$type',
         file!.bytes!,
         file.name,
-      );
+      ) as Map<String, dynamic>;
       await load();
+      if (mounted) _showUploadFeedback(type, response);
     } catch (exception) {
       if (mounted) setState(() => error = exception.toString());
     } finally {
       if (mounted) setState(() => uploadingType = null);
     }
+  }
+
+  /// Role-aware confirmation so nobody is left wondering whether the upload
+  /// "took": presenters get told they're done, admins get pointed at review.
+  void _showUploadFeedback(String type, Map<String, dynamic> response) {
+    final rowCount = response['row_count'] ?? 0;
+    final parseErrors = ((response['parse_errors'] as List?) ?? const []).cast<Map<String, dynamic>>();
+    final errorNote = parseErrors.isEmpty
+        ? ''
+        : ' ${parseErrors.length} ${parseErrors.length == 1 ? 'row' : 'rows'} could not be read — view details.';
+    if (!widget.session.user!.isAdmin) {
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          icon: const Icon(Icons.check_circle_outline, color: Color(0xFF248A52), size: 42),
+          title: const Text('Sign-in sheet received'),
+          content: Text(
+            'Sign-in sheet received ($rowCount rows). The compliance team has been '
+            'notified — nothing else is needed from you.$errorNote',
+          ),
+          actions: [
+            if (parseErrors.isNotEmpty)
+              TextButton(
+                onPressed: () {
+                  Navigator.of(dialogContext).pop();
+                  _showParseErrors(parseErrors);
+                },
+                child: const Text('View details'),
+              ),
+            FilledButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Done')),
+          ],
+        ),
+      );
+    } else {
+      final label = allTypes.firstWhere((t) => t.$1 == type, orElse: () => allTypes[1]).$2;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('$label processed — $rowCount rows. Review compliance next.$errorNote'),
+        duration: const Duration(seconds: 6),
+        action: parseErrors.isEmpty
+            ? null
+            : SnackBarAction(label: 'View details', onPressed: () => _showParseErrors(parseErrors)),
+      ));
+    }
+  }
+
+  /// Lists every row the parser could not read, so "N row errors" is
+  /// actionable instead of a dead end.
+  void _showParseErrors(List<Map<String, dynamic>> parseErrors) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('${parseErrors.length} ${parseErrors.length == 1 ? 'row' : 'rows'} could not be read'),
+        content: SizedBox(
+          width: 480,
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: parseErrors.length,
+            separatorBuilder: (context, index) => divider,
+            itemBuilder: (_, index) {
+              final entry = parseErrors[index];
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text('Row ${entry['row']}: ${entry['message']}', style: const TextStyle(fontSize: 13)),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Close')),
+        ],
+      ),
+    );
   }
 
   /// Downloads the originally uploaded file (e.g. a sign-in sheet) so it can
@@ -102,6 +174,7 @@ class _UploadsPageState extends State<UploadsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isAdmin = widget.session.user!.isAdmin;
     return SingleChildScrollView(
       padding: pagePadding,
       child: Center(
@@ -126,7 +199,9 @@ class _UploadsPageState extends State<UploadsPage> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'Upload CSV, XLSX, PDF, DOCX, or image scans. Image OCR is best-effort, so review extracted rows before approving certificates.',
+                          isAdmin
+                              ? 'Upload CSV, XLSX, PDF, DOCX, or image scans. Image OCR is best-effort, so review extracted rows before approving certificates.'
+                              : "Upload the signed attendance sheet from your session. A photo (JPG/PNG), scan (PDF), or spreadsheet all work. iPhone tip: HEIC photos aren't supported — share the photo as JPEG or scan to PDF from the Notes app.",
                           style: TextStyle(color: Colors.blueGrey.shade700),
                         ),
                       ),
@@ -136,7 +211,7 @@ class _UploadsPageState extends State<UploadsPage> {
               ),
               if (error != null) ...[
                 const SizedBox(height: 12),
-                Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                InlineAlert(message: error!, onDismiss: () => setState(() => error = null)),
               ],
               const SizedBox(height: 16),
               for (final type in types) ...[
@@ -148,6 +223,7 @@ class _UploadsPageState extends State<UploadsPage> {
                   loading: uploadingType == type.$1,
                   onUpload: () => pickAndUpload(type.$1),
                   onOpen: latestFor(type.$1) == null ? null : () => openUpload(latestFor(type.$1)!),
+                  onShowErrors: _showParseErrors,
                 ),
                 const SizedBox(height: 12),
               ],
@@ -182,6 +258,7 @@ class _UploadRow extends StatelessWidget {
     required this.loading,
     required this.onUpload,
     required this.onOpen,
+    required this.onShowErrors,
   });
 
   final String title;
@@ -194,9 +271,12 @@ class _UploadRow extends StatelessWidget {
   /// Downloads the original uploaded file; null while nothing is uploaded.
   final VoidCallback? onOpen;
 
+  /// Opens the row-by-row parse error dialog.
+  final void Function(List<Map<String, dynamic>>) onShowErrors;
+
   @override
   Widget build(BuildContext context) {
-    final errors = (upload?['parse_errors'] as List?) ?? [];
+    final errors = ((upload?['parse_errors'] as List?) ?? const []).cast<Map<String, dynamic>>();
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -246,13 +326,27 @@ class _UploadRow extends StatelessWidget {
                               ),
                             ),
                             Text(
-                              '  • ${upload!['row_count']} rows • ${DateFormat.yMd().add_jm().format(DateTime.parse(upload!['uploaded_at'] as String).toLocal())}',
+                              '  • ${upload!['row_count']} rows • ${formatDateTime(DateTime.parse(upload!['uploaded_at'] as String))}',
                               style: const TextStyle(fontSize: 12),
                             ),
                           ],
                         ),
                         if (errors.isNotEmpty)
-                          Text('${errors.length} row errors require review', style: const TextStyle(color: Color(0xFFB42318), fontSize: 12)),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: InkWell(
+                              onTap: () => onShowErrors(errors),
+                              child: Text(
+                                '${errors.length} ${errors.length == 1 ? 'row' : 'rows'} could not be read — view details',
+                                style: const TextStyle(
+                                  color: Color(0xFFB42318),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  decoration: TextDecoration.underline,
+                                ),
+                              ),
+                            ),
+                          ),
                       ],
                     ],
                   ),

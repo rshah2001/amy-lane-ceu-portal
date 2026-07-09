@@ -74,6 +74,16 @@ class _PublicTestPageState extends State<PublicTestPage> {
     }
   }
 
+  /// The backend keeps the latest attempt, so a failed attendee can simply
+  /// retake the test instead of chasing down the organizer.
+  void _retake() {
+    setState(() {
+      result = null;
+      selected.clear();
+      error = null;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -92,7 +102,7 @@ class _PublicTestPageState extends State<PublicTestPage> {
                 : test == null
                     ? const LoadingPanel()
                     : result != null
-                        ? _ResultCard(result: result!)
+                        ? _ResultCard(result: result!, onTryAgain: _retake)
                         : _buildForm(),
           ),
         ),
@@ -121,6 +131,9 @@ class _PublicTestPageState extends State<PublicTestPage> {
               const SizedBox(height: 22),
               TextFormField(
                 controller: name,
+                autofillHints: const [AutofillHints.name],
+                textCapitalization: TextCapitalization.words,
+                textInputAction: TextInputAction.next,
                 decoration: const InputDecoration(labelText: 'Full name'),
                 validator: (value) => value == null || value.trim().length < 2 ? 'Enter your name' : null,
               ),
@@ -128,6 +141,8 @@ class _PublicTestPageState extends State<PublicTestPage> {
               TextFormField(
                 controller: email,
                 keyboardType: TextInputType.emailAddress,
+                autofillHints: const [AutofillHints.email],
+                textInputAction: TextInputAction.done,
                 decoration: const InputDecoration(labelText: 'Email address'),
                 validator: emailValidator,
               ),
@@ -169,8 +184,11 @@ class _PublicTestPageState extends State<PublicTestPage> {
 }
 
 class _ResultCard extends StatelessWidget {
-  const _ResultCard({required this.result});
+  const _ResultCard({required this.result, required this.onTryAgain});
   final Map<String, dynamic> result;
+
+  /// Clears the previous attempt so the attendee can retake immediately.
+  final VoidCallback onTryAgain;
 
   @override
   Widget build(BuildContext context) {
@@ -189,9 +207,23 @@ class _ResultCard extends StatelessWidget {
             Text(
               passed
                   ? 'You passed. Your certificate will be issued after the organizer reviews the session.'
-                  : 'A score of 80% is required. Please contact the organizer if you need to retake the test.',
+                  : 'A score of 80% is required. You can retake the test right away — your latest attempt is the one that counts.',
               textAlign: TextAlign.center,
             ),
+            if (!passed) ...[
+              const SizedBox(height: 20),
+              ElevatedButton.icon(
+                onPressed: onTryAgain,
+                icon: const Icon(Icons.replay),
+                label: const Text('Try again'),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Having trouble? Contact the event organizer for help.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: Color(0xFF667085)),
+              ),
+            ],
           ],
         ),
       ),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../core/session.dart';
@@ -27,6 +28,10 @@ class _DashboardPageState extends State<DashboardPage> {
   DashboardStats? stats;
   DashboardCharts? charts;
   List<TrainingEvent> events = [];
+  // Date labels for the "Eligible attendees by event" chart. Recurring series
+  // share a title, so a truncated title renders identical bars; the event date
+  // is what tells them apart.
+  List<String> complianceChartLabels = [];
   String? error;
 
   @override
@@ -44,24 +49,42 @@ class _DashboardPageState extends State<DashboardPage> {
         widget.session.api.get('/dashboard/charts'),
       ]);
       if (!mounted) return;
+      final allEvents = (results[1] as List)
+          .map((item) => TrainingEvent.fromJson(item as Map<String, dynamic>))
+          .toList();
+      final chartsJson = results[2] as Map<String, dynamic>;
+      final dateById = {for (final event in allEvents) event.id: event.eventDate};
       setState(() {
         stats = DashboardStats.fromJson(results[0] as Map<String, dynamic>);
-        events = (results[1] as List)
-            .map((item) => TrainingEvent.fromJson(item as Map<String, dynamic>))
-            .take(5)
-            .toList();
-        charts = DashboardCharts.fromJson(results[2] as Map<String, dynamic>);
+        events = allEvents.take(5).toList();
+        charts = DashboardCharts.fromJson(chartsJson);
+        complianceChartLabels = [
+          for (final point in (chartsJson['events_compliance'] as List? ?? const []))
+            _chartLabel(point as Map<String, dynamic>, dateById),
+        ];
       });
     } catch (exception) {
       if (mounted) setState(() => error = exception.toString());
     }
   }
 
+  /// Label a chart bar by the event's date (recurring series share a title, so
+  /// dates are the only distinguishing part); falls back to a truncated title.
+  static String _chartLabel(Map<String, dynamic> point, Map<int, DateTime> dateById) {
+    final date = dateById[point['event_id'] as int?];
+    if (date != null) return DateFormat.MMMd().format(date.toLocal());
+    final title = point['title'] as String? ?? '';
+    return title.length > 14 ? '${title.substring(0, 12)}…' : title;
+  }
+
+  void openEvent(TrainingEvent event) => context.go('/events/${event.id}', extra: event);
+
   @override
   Widget build(BuildContext context) {
     if (error != null) return ErrorPanel(message: error!, onRetry: load);
     if (stats == null) return const LoadingPanel();
     final data = stats!;
+    final isAdmin = widget.session.user!.isAdmin;
     return SingleChildScrollView(
       padding: pagePadding,
       child: Center(
@@ -75,7 +98,8 @@ class _DashboardPageState extends State<DashboardPage> {
                 subtitle: 'A current view of events, reviews, and certificate delivery.',
                 actions: [
                   OutlinedButton.icon(onPressed: widget.onOpenEvents, icon: const Icon(Icons.event_note_outlined), label: const Text('View events')),
-                  ElevatedButton.icon(onPressed: widget.onCreateEvent, icon: const Icon(Icons.add), label: const Text('Create event')),
+                  if (isAdmin)
+                    ElevatedButton.icon(onPressed: widget.onCreateEvent, icon: const Icon(Icons.add), label: const Text('Create event')),
                 ],
               ),
               const SizedBox(height: 24),
@@ -131,10 +155,12 @@ class _DashboardPageState extends State<DashboardPage> {
                             child: ChartCard(
                               title: 'Eligible attendees by event',
                               child: SimpleBarChart(
-                                labels: [
-                                  for (final e in charts!.eventsCompliance)
-                                    e.title.length > 14 ? '${e.title.substring(0, 12)}…' : e.title,
-                                ],
+                                labels: complianceChartLabels.length == charts!.eventsCompliance.length
+                                    ? complianceChartLabels
+                                    : [
+                                        for (final e in charts!.eventsCompliance)
+                                          e.title.length > 14 ? '${e.title.substring(0, 12)}…' : e.title,
+                                      ],
                                 values: charts!.eventsCompliance.map((e) => e.eligible.toDouble()).toList(),
                                 color: const Color(0xFF248A52),
                               ),
@@ -161,27 +187,36 @@ class _DashboardPageState extends State<DashboardPage> {
                     ),
                     divider,
                     if (events.isEmpty)
-                      const Padding(padding: EdgeInsets.all(32), child: Text('No events yet. Create the first training event.'))
+                      Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Text(isAdmin
+                            ? 'No events yet. Create the first training event.'
+                            : 'No events assigned to you yet — your NMEDA administrator will assign your session before the event date.'),
+                      )
                     else
                       SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
                         child: DataTable(
+                          showCheckboxColumn: false,
                           columns: const [
                             DataColumn(label: Text('Event')),
                             DataColumn(label: Text('Date')),
                             DataColumn(label: Text('CEU hours')),
                             DataColumn(label: Text('Presenter')),
                             DataColumn(label: Text('Status')),
+                            DataColumn(label: Text('')),
                           ],
                           rows: events
                               .map(
                                 (event) => DataRow(
+                                  onSelectChanged: (_) => openEvent(event),
                                   cells: [
                                     DataCell(SizedBox(width: 260, child: Text(event.title, style: const TextStyle(fontWeight: FontWeight.w600)))),
-                                    DataCell(Text(DateFormat.yMMMd().format(event.eventDate))),
+                                    DataCell(Text(formatDate(event.eventDate))),
                                     DataCell(Text(event.ceuHours.toStringAsFixed(1))),
                                     DataCell(Text(event.presenterName ?? 'Not assigned')),
-                                    DataCell(StatusBadge(event.status.toUpperCase(), tone: event.status == 'review' ? BadgeTone.warning : BadgeTone.info)),
+                                    DataCell(_statusBadge(event.status)),
+                                    DataCell(IconButton(tooltip: 'Open event', onPressed: () => openEvent(event), icon: const Icon(Icons.arrow_forward))),
                                   ],
                                 ),
                               )
@@ -197,5 +232,10 @@ class _DashboardPageState extends State<DashboardPage> {
       ),
     );
   }
+}
+
+StatusBadge _statusBadge(String status) {
+  final (label, tone) = eventStatusDisplay(status);
+  return StatusBadge(label, tone: tone);
 }
 
