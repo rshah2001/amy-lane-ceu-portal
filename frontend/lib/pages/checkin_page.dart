@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/api_client.dart';
 import '../core/theme.dart';
 import '../widgets/common.dart';
+import 'public_survey_page.dart';
+import 'public_test_page.dart';
 
 class CheckinPage extends StatefulWidget {
   const CheckinPage({
@@ -27,6 +30,7 @@ class _CheckinPageState extends State<CheckinPage> {
   final name = TextEditingController();
   final email = TextEditingController();
   Map<String, dynamic>? event;
+  Map<String, dynamic> nextSteps = {};
   String? error;
   bool submitted = false;
   bool saving = false;
@@ -62,16 +66,67 @@ class _CheckinPageState extends State<CheckinPage> {
       error = null;
     });
     try {
-      await widget.api.post('/public/checkin/${widget.token}', {
+      final result = await widget.api.post('/public/checkin/${widget.token}', {
         'full_name': name.text.trim(),
         'email': email.text.trim(),
       });
-      if (mounted) setState(() => submitted = true);
+      if (mounted) {
+        setState(() {
+          nextSteps = (result as Map?)?.cast<String, dynamic>() ?? {};
+          submitted = true;
+        });
+      }
     } catch (exception) {
       if (mounted) setState(() => error = exception.toString());
     } finally {
       if (mounted) setState(() => saving = false);
     }
+  }
+
+  // After check-in the attendee goes straight to the post-test/survey with
+  // their name and email carried over, so nothing gets typed twice.
+  List<Widget> _nextStepButtons() {
+    final buttons = <Widget>[];
+    void addButton(String label, IconData icon, VoidCallback onPressed) {
+      buttons.add(const SizedBox(height: 14));
+      buttons.add(ElevatedButton.icon(onPressed: onPressed, icon: Icon(icon), label: Text(label)));
+    }
+
+    final enteredName = name.text.trim();
+    final enteredEmail = email.text.trim();
+    if (nextSteps['test_token'] != null) {
+      addButton('Continue to the post-test', Icons.quiz, () {
+        Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => PublicTestPage(
+            api: widget.api,
+            token: nextSteps['test_token'] as String,
+            prefillName: enteredName,
+            prefillEmail: enteredEmail,
+          ),
+        ));
+      });
+    } else if (nextSteps['post_test_url'] != null) {
+      addButton('Open the post-test', Icons.quiz, () {
+        launchUrl(Uri.parse(nextSteps['post_test_url'] as String), webOnlyWindowName: '_blank');
+      });
+    }
+    if (nextSteps['survey_token'] != null) {
+      addButton('Take the feedback survey', Icons.rate_review, () {
+        Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => PublicSurveyPage(
+            api: widget.api,
+            token: nextSteps['survey_token'] as String,
+            prefillName: enteredName,
+            prefillEmail: enteredEmail,
+          ),
+        ));
+      });
+    } else if (nextSteps['external_survey_url'] != null) {
+      addButton('Take the feedback survey', Icons.rate_review, () {
+        launchUrl(Uri.parse(nextSteps['external_survey_url'] as String), webOnlyWindowName: '_blank');
+      });
+    }
+    return buttons;
   }
 
   @override
@@ -92,19 +147,22 @@ class _CheckinPageState extends State<CheckinPage> {
                 : event == null
                     ? const LoadingPanel()
                     : submitted
-                        ? const Card(
+                        ? Card(
                             child: Padding(
-                              padding: EdgeInsets.all(40),
+                              padding: const EdgeInsets.all(40),
                               child: Column(
                                 children: [
-                                  Icon(Icons.verified, color: Color(0xFF248A52), size: 52),
-                                  SizedBox(height: 16),
-                                  Text("You're checked in", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
-                                  SizedBox(height: 8),
+                                  const Icon(Icons.verified, color: Color(0xFF248A52), size: 52),
+                                  const SizedBox(height: 16),
+                                  const Text("You're checked in", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
+                                  const SizedBox(height: 8),
                                   Text(
-                                    'Your attendance has been recorded. Remember to complete the post-test to earn your certificate.',
+                                    nextSteps.isEmpty
+                                        ? 'Your attendance has been recorded. Remember to complete the post-test to earn your certificate.'
+                                        : 'Your attendance has been recorded. Finish the steps below to earn your certificate.',
                                     textAlign: TextAlign.center,
                                   ),
+                                  ..._nextStepButtons(),
                                 ],
                               ),
                             ),

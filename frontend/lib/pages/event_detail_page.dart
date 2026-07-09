@@ -48,6 +48,16 @@ class EventDetailPage extends StatelessWidget {
     downloadBytes(bytes, '${event.title}-checkin-qr.png', 'image/png');
   }
 
+  Future<void> downloadQrSheet(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final bytes = await session.api.download('/events/${event.id}/qr-sheet');
+      downloadBytes(bytes, '${event.title}-qr-sheet.pdf', 'application/pdf');
+    } catch (exception) {
+      messenger.showSnackBar(SnackBar(content: Text('QR sheet download failed: $exception')));
+    }
+  }
+
   Future<void> distribute(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('Sending post-test and survey links to registered attendees...')));
@@ -151,6 +161,14 @@ class EventDetailPage extends StatelessWidget {
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           const Text('Participant links', style: TextStyle(fontWeight: FontWeight.w700)),
+                          Tooltip(
+                            message: 'One printable page with the check-in, post-test, and survey QR codes — drop it into the slide deck',
+                            child: ElevatedButton.icon(
+                              onPressed: () => downloadQrSheet(context),
+                              icon: const Icon(Icons.picture_as_pdf_outlined),
+                              label: const Text('QR sheet (PDF)'),
+                            ),
+                          ),
                           if (checkinLink != null)
                             OutlinedButton.icon(
                               onPressed: downloadCheckinQr,

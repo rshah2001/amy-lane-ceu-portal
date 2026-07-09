@@ -49,6 +49,8 @@ def _send_via_resend(recipient: str, subject: str, body: str, pdf_path: Path | N
         "subject": subject,
         "text": body,
     }
+    if settings.reply_contact_email:
+        payload["reply_to"] = [settings.reply_contact_email]
     if pdf_path is not None:
         payload["attachments"] = [
             {"filename": pdf_path.name, "content": base64.b64encode(_read_pdf(pdf_path)).decode()}
@@ -82,6 +84,9 @@ def _build_message(recipient: str, subject: str) -> EmailMessage:
     message["From"] = settings.smtp_from
     message["To"] = recipient
     message["Message-ID"] = make_msgid()
+    # The sending mailbox is unmonitored; route any replies to a real person.
+    if settings.reply_contact_email:
+        message["Reply-To"] = settings.reply_contact_email
     return message
 
 
