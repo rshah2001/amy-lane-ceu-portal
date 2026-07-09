@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ElementTree
 import zipfile
 from zipfile import BadZipFile
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DivisionByZero, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -112,15 +112,36 @@ def _get_or_create_link(db: Session, event_id: int, attendee: Attendee) -> Event
 
 
 def _parse_score(value: str | None) -> Decimal:
+    """Normalize the score formats presenters upload to a 0-100 percentage.
+
+    Accepted: a percentage ("85", "85%"), a fraction ("8/10", "17/20"), a
+    score out of 10 ("8", "9.5" — post-tests are 10 questions), or an Excel
+    percent cell that reaches us as its stored fraction ("0.85").
+    """
     if value is None:
-        raise ValueError('A post-test score is required (expected a "Score" column)')
+        raise ValueError(
+            'A post-test score is required (expected a "Score" column with a value like 85%, 8/10, or 8)'
+        )
+    is_percent = "%" in value
+    text = value.replace("%", "").strip()
     try:
-        score = Decimal(value.replace("%", "").strip())
-    except InvalidOperation as exc:
-        raise ValueError(f"Invalid score: {value!r} (expected a number between 0 and 100)") from exc
+        if "/" in text:
+            numerator, _, denominator = text.partition("/")
+            score = Decimal(numerator.strip()) / Decimal(denominator.strip()) * 100
+        else:
+            score = Decimal(text)
+            if not is_percent:
+                if 0 < score < 1:
+                    score *= 100
+                elif 0 <= score <= 10:
+                    score *= 10
+    except (InvalidOperation, DivisionByZero) as exc:
+        raise ValueError(
+            f"Invalid score: {value!r} (expected a percentage like 85%, a fraction like 8/10, or a score out of 10)"
+        ) from exc
     if score < 0 or score > 100:
         raise ValueError(f"Post-test score must be between 0 and 100, got {score}")
-    return score
+    return score.quantize(Decimal("0.01"))
 
 
 def _parse_completed(value: str | None) -> bool:
@@ -206,13 +227,26 @@ def _records_from_rows(rows: list[tuple], header_index: int) -> list[dict[str, s
     return records
 
 
+def _xlsx_cell_value(cell) -> Any:
+    """Excel stores a percent-formatted 85% as 0.85; surface it as "85%" so
+    the score parser doesn't misread it as a fraction of one percent."""
+    value = cell.value
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and "%" in (cell.number_format or "")
+    ):
+        return f"{value * 100:g}%"
+    return value
+
+
 def parse_xlsx_bytes(contents: bytes) -> list[dict[str, str]]:
     workbook = load_workbook(io.BytesIO(contents), read_only=True, data_only=True)
     # Real exports (e.g. Microsoft Teams) ship multiple sheets: a summary sheet
     # plus the attendee table. Choose the sheet whose header best identifies people.
     best: tuple[tuple[int, int, int], list[dict[str, str]]] | None = None
     for worksheet in workbook.worksheets:
-        rows = list(worksheet.iter_rows(values_only=True))
+        rows = [tuple(_xlsx_cell_value(cell) for cell in row) for row in worksheet.iter_rows()]
         header_index = _detect_header(rows)
         if header_index is None:
             continue

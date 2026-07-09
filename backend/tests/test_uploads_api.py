@@ -9,6 +9,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+from openpyxl import Workbook
 from reportlab.pdfgen.canvas import Canvas
 from reportlab.lib.pagesizes import letter
 
@@ -365,6 +366,67 @@ class TestUploadIngestion:
         )
         assert response.status_code == 200
         assert len(response.json()) == 2
+
+
+class TestPostTestScoreFormats:
+    """Presenters upload scores as percentages, fractions, or out of 10."""
+
+    def test_csv_score_formats_normalize_to_percent(self, client, admin, event):
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "post_test",
+            "Full Name,Email,Score\n"
+            "Percy Cent,percy.cent@example.com,85%\n"
+            "Fran Action,fran.action@example.com,8/10\n"
+            "Tenny Scale,tenny.scale@example.com,9\n"
+            "Decy Mal,decy.mal@example.com,0.85\n"
+            "Plain Percent,plain.percent@example.com,72\n",
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["parse_errors"] == []
+        rows = compliance_rows_by_name(client, admin.headers, event["id"])
+        assert rows["Percy Cent"]["test_score"] == 85.0
+        assert rows["Fran Action"]["test_score"] == 80.0
+        assert rows["Tenny Scale"]["test_score"] == 90.0
+        assert rows["Decy Mal"]["test_score"] == 85.0
+        assert rows["Plain Percent"]["test_score"] == 72.0
+
+    def test_xlsx_percent_formatted_cell_reads_as_percentage(self, client, admin, event):
+        # Excel stores a percent-formatted 90% as the number 0.9.
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(["Name", "Email", "Score"])
+        worksheet.append(["Exel Percent", "exel.percent@example.com", 0.9])
+        worksheet["C2"].number_format = "0%"
+        output = BytesIO()
+        workbook.save(output)
+        response = upload_document(
+            client,
+            admin.headers,
+            event["id"],
+            "post_test",
+            "results.xlsx",
+            output.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["parse_errors"] == []
+        rows = compliance_rows_by_name(client, admin.headers, event["id"])
+        assert rows["Exel Percent"]["test_score"] == 90.0
+
+    def test_unreadable_score_reports_row_error(self, client, admin, event):
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "post_test",
+            "Full Name,Email,Score\nBad Score,bad.score@example.com,eight\n",
+        )
+        assert response.status_code == 201, response.text
+        errors = response.json()["parse_errors"]
+        assert len(errors) == 1 and "Invalid score" in errors[0]["message"]
 
 
 class TestFileImportKeepsWebSubmissions:
