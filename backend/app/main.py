@@ -8,6 +8,7 @@ from app import models  # noqa: F401
 from app.api import (
     auth,
     certificates,
+    checkin,
     compliance,
     distribution,
     events,
@@ -62,6 +63,7 @@ app.include_router(surveys.router, prefix="/api")
 app.include_router(tests.router, prefix="/api")
 app.include_router(distribution.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
+app.include_router(checkin.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(verification.router, prefix="/api")
 app.include_router(system.router, prefix="/api")

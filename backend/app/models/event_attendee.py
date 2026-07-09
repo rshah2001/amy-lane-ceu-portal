@@ -28,6 +28,9 @@ class EventAttendee(TimestampMixin, Base):
     eligibility_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
     compliance_status: Mapped[str] = mapped_column(String(50), default="pending", index=True)
     invite_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set when the attendee self-checked-in via the public QR link; attendance
+    # file re-imports must never clear attendance recorded this way.
+    checked_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     event = relationship("TrainingEvent", back_populates="event_attendees")
     attendee = relationship("Attendee", back_populates="event_links")

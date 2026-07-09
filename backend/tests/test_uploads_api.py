@@ -400,3 +400,32 @@ class TestFileImportKeepsWebSubmissions:
         assert web["test_completed"] is True, "web test result was wiped by the file import"
         assert web["test_score"] == 100.0
         assert by_email["pat.doe@example.com"]["test_completed"] is True
+
+    def test_qr_checkin_survives_attendance_file_upload(self, client, admin):
+        event = create_event(client, admin.headers)
+        # The checkin token is generated at event creation; fetch the event to get it.
+        detail = client.get(f"/api/events/{event['id']}", headers=admin.headers).json()
+        token = detail.get("checkin_token")
+        assert token, "event has no checkin token"
+        response = client.post(
+            f"/api/public/checkin/{token}",
+            json={"full_name": "Sam Lee", "email": "sam.lee@example.com"},
+        )
+        assert response.status_code == 200, response.text
+
+        upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "attendance",
+            "Full Name,Email\nPat Doe,pat.doe@example.com\n",
+        )
+
+        compliance = client.get(
+            f"/api/events/{event['id']}/compliance", headers=admin.headers
+        ).json()
+        by_email = {row["email"]: row for row in compliance}
+        assert by_email["sam.lee@example.com"]["attended"] is True, (
+            "QR check-in was wiped by the sign-in sheet import"
+        )
+        assert by_email["pat.doe@example.com"]["attended"] is True

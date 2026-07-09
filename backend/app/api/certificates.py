@@ -41,6 +41,16 @@ def get_link(db: Session, event_id: int, link_id: int) -> EventAttendee:
     return link
 
 
+def ensure_pdf(link: EventAttendee, certificate: Certificate) -> Path:
+    # The free-tier host has an ephemeral disk, so a generated cert PDF can
+    # disappear on redeploy while its DB row persists. Re-create it from the
+    # same immutable data (identical output) on demand so send/download work.
+    path = Path(certificate.pdf_path)
+    if not path.exists():
+        generate_certificate_pdf(link, certificate.certificate_number, output_path=path)
+    return path
+
+
 @router.get("", response_model=list[CertificateOut])
 def list_certificates(
     event_id: int,
@@ -175,7 +185,7 @@ def send_certificate(
             link.attendee.email,
             link.attendee.full_name,
             link.event.title,
-            Path(certificate.pdf_path),
+            ensure_pdf(link, certificate),
         )
         log = CertificateEmailLog(
             certificate_id=certificate.id,
@@ -314,7 +324,7 @@ def send_all_generated(
             continue
         try:
             message_id = send_certificate_email(
-                link.attendee.email, link.attendee.full_name, link.event.title, Path(certificate.pdf_path)
+                link.attendee.email, link.attendee.full_name, link.event.title, ensure_pdf(link, certificate)
             )
             db.add(CertificateEmailLog(certificate_id=certificate.id, recipient_email=link.attendee.email, status="sent", provider_message_id=message_id))
             certificate.sent_at = datetime.now(timezone.utc)
@@ -340,13 +350,18 @@ def download_certificate(
     get_visible_event(db, event_id, current_user)
     certificate = db.scalar(
         select(Certificate)
+        .options(
+            joinedload(Certificate.event_attendee).joinedload(EventAttendee.attendee),
+            joinedload(Certificate.event_attendee).joinedload(EventAttendee.event),
+        )
         .join(EventAttendee)
         .where(Certificate.id == certificate_id, EventAttendee.event_id == event_id)
     )
-    if not certificate or not Path(certificate.pdf_path).exists():
-        raise HTTPException(status_code=404, detail="Certificate file not found")
+    if not certificate:
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    path = ensure_pdf(certificate.event_attendee, certificate)
     return FileResponse(
-        certificate.pdf_path,
+        path,
         media_type="application/pdf",
         filename=f"{certificate.certificate_number}.pdf",
     )

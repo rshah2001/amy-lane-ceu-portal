@@ -1,7 +1,7 @@
 """Tag test/survey results with their source so file re-imports keep web submissions.
 
-Revision ID: 0007_result_source
-Revises: 0006_lifecycle_notifications
+Revision ID: 0008_result_source
+Revises: 0007_checkin_token
 Create Date: 2026-07-08
 """
 
@@ -10,8 +10,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0007_result_source"
-down_revision: Union[str, None] = "0006_lifecycle_notifications"
+revision: str = "0008_result_source"
+down_revision: Union[str, None] = "0007_checkin_token"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

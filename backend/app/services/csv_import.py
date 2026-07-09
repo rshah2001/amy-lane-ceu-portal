@@ -455,10 +455,20 @@ def process_rows(
     extraction_errors: list[dict[str, Any]] | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = list(extraction_errors or [])
+    # Attendance recorded through the public QR check-in (checked_in_at set)
+    # must survive file re-imports: only rows sourced from files are reset.
     if file_type == "registration":
-        db.execute(update(EventAttendee).where(EventAttendee.event_id == event_id).values(registered=False))
+        db.execute(
+            update(EventAttendee)
+            .where(EventAttendee.event_id == event_id, EventAttendee.checked_in_at.is_(None))
+            .values(registered=False)
+        )
     elif file_type == "attendance":
-        db.execute(update(EventAttendee).where(EventAttendee.event_id == event_id).values(attended=False))
+        db.execute(
+            update(EventAttendee)
+            .where(EventAttendee.event_id == event_id, EventAttendee.checked_in_at.is_(None))
+            .values(attended=False)
+        )
     if file_type == "post_test":
         # Re-importing a file only replaces file-sourced results; submissions
         # made on the public test page ("web") and their flags must survive.

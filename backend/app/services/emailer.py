@@ -1,6 +1,10 @@
+import base64
+import json
 import logging
 import smtplib
 import ssl
+import urllib.error
+import urllib.request
 from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
@@ -12,10 +16,10 @@ from app.models.training_event import TrainingEvent
 
 logger = logging.getLogger("app.emailer")
 
-# Connection/read timeout so a hung SMTP server cannot block a request forever.
-SMTP_TIMEOUT_SECONDS = 30
-# Retry once on transient failures (dropped connections, timeouts). Permanent
-# errors (bad credentials, refused recipients) fail immediately.
+# Connection/read timeout so a hung mail server cannot block a request forever.
+SEND_TIMEOUT_SECONDS = 30
+# Retry once on transient SMTP failures (dropped connections, timeouts).
+# Permanent errors (bad credentials, refused recipients) fail immediately.
 SMTP_MAX_ATTEMPTS = 2
 _TRANSIENT_SMTP_ERRORS = (
     smtplib.SMTPServerDisconnected,
@@ -24,6 +28,52 @@ _TRANSIENT_SMTP_ERRORS = (
     ConnectionError,
     TimeoutError,
 )
+
+RESEND_ENDPOINT = "https://api.resend.com/emails"
+
+
+def _read_pdf(pdf_path: Path) -> bytes:
+    try:
+        return pdf_path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(f"Certificate PDF is missing or unreadable: {pdf_path}") from exc
+
+
+def _send_via_resend(recipient: str, subject: str, body: str, pdf_path: Path | None = None) -> str:
+    """Send over Resend's HTTPS API (works where outbound SMTP is blocked, e.g. Render)."""
+    if not settings.resend_api_key:
+        raise RuntimeError("RESEND_API_KEY is required when EMAIL_DELIVERY_MODE is resend")
+    payload: dict = {
+        "from": settings.resend_from,
+        "to": [recipient],
+        "subject": subject,
+        "text": body,
+    }
+    if pdf_path is not None:
+        payload["attachments"] = [
+            {"filename": pdf_path.name, "content": base64.b64encode(_read_pdf(pdf_path)).decode()}
+        ]
+    request = urllib.request.Request(
+        RESEND_ENDPOINT,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {settings.resend_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Resend is behind Cloudflare, which 403s the default "Python-urllib"
+            # User-Agent (error 1010). A normal UA passes.
+            "User-Agent": "Mozilla/5.0 (compatible; CEU-Portal/1.0; +https://ceu-portal.vercel.app)",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=SEND_TIMEOUT_SECONDS) as response:
+            result = json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        logger.error("Resend send to %s failed: HTTP %s %s", recipient, exc.code, detail)
+        raise RuntimeError(f"Resend API error {exc.code}: {detail}") from exc
+    return result.get("id", f"resend-{uuid4()}")
 
 
 def _build_message(recipient: str, subject: str) -> EmailMessage:
@@ -47,7 +97,7 @@ def _smtp_send(message: EmailMessage) -> str:
     for attempt in range(1, SMTP_MAX_ATTEMPTS + 1):
         try:
             with smtplib.SMTP(
-                settings.smtp_host, settings.smtp_port, timeout=SMTP_TIMEOUT_SECONDS
+                settings.smtp_host, settings.smtp_port, timeout=SEND_TIMEOUT_SECONDS
             ) as smtp:
                 smtp.starttls(context=tls_context)
                 if settings.smtp_username and settings.smtp_password:
@@ -73,6 +123,16 @@ def _smtp_send(message: EmailMessage) -> str:
     raise last_error  # type: ignore[misc]  # loop always sets it before exiting
 
 
+def _send_via_smtp(recipient: str, subject: str, body: str, pdf_path: Path | None = None) -> str:
+    message = _build_message(recipient, subject)
+    message.set_content(body)
+    if pdf_path is not None:
+        message.add_attachment(
+            _read_pdf(pdf_path), maintype="application", subtype="pdf", filename=pdf_path.name
+        )
+    return _smtp_send(message)
+
+
 def _with_footer(body: str) -> str:
     """Append the do-not-reply footer every outgoing body carries."""
     footer = "\n\n--\nThis mailbox is not monitored — please do not reply to this email."
@@ -81,15 +141,22 @@ def _with_footer(body: str) -> str:
     return body + footer
 
 
-def _deliver(recipient: str, subject: str, body: str) -> str:
-    """Send a plain-text email, or write it to the server log in log mode."""
+def _deliver(recipient: str, subject: str, body: str, pdf_path: Path | None = None) -> str:
+    """Route an email through the configured delivery mode: log / resend / smtp."""
     body = _with_footer(body)
-    if settings.email_delivery_mode == "log":
-        logger.info("[log mode] To: %s | Subject: %s\n%s", recipient, subject, body)
+    mode = settings.email_delivery_mode
+    if mode == "log":
+        logger.info(
+            "[log mode] To: %s | Subject: %s%s\n%s",
+            recipient,
+            subject,
+            f" | Attachment: {pdf_path.name}" if pdf_path else "",
+            body,
+        )
         return f"log-{uuid4()}"
-    message = _build_message(recipient, subject)
-    message.set_content(body)
-    return _smtp_send(message)
+    if mode == "resend":
+        return _send_via_resend(recipient, subject, body, pdf_path)
+    return _send_via_smtp(recipient, subject, body, pdf_path)
 
 
 def send_simple_email(recipient: str, subject: str, body: str) -> str:
@@ -133,25 +200,5 @@ def send_certificate_email(
     pdf_path: Path,
 ) -> str:
     subject = f"Your CEU certificate: {event_title}"
-    body = _with_footer(f"Hello {attendee_name},\n\nYour certificate for {event_title} is attached.")
-    if settings.email_delivery_mode == "log":
-        logger.info(
-            "[log mode] To: %s | Subject: Your CEU certificate: %s | Attachment: %s\n%s",
-            recipient, event_title, pdf_path.name, body,
-        )
-        return f"log-{uuid4()}"
-
-    try:
-        pdf_bytes = pdf_path.read_bytes()
-    except OSError as exc:
-        raise RuntimeError(f"Certificate PDF is missing or unreadable: {pdf_path}") from exc
-
-    message = _build_message(recipient, subject)
-    message.set_content(body)
-    message.add_attachment(
-        pdf_bytes,
-        maintype="application",
-        subtype="pdf",
-        filename=pdf_path.name,
-    )
-    return _smtp_send(message)
+    body = f"Hello {attendee_name},\n\nYour certificate for {event_title} is attached."
+    return _deliver(recipient, subject, body, pdf_path)

@@ -24,18 +24,14 @@ services:
         sync: false
       - key: PUBLIC_FRONTEND_URL
         sync: false
+      # Render blocks outbound SMTP, so email goes through Resend's HTTPS API.
       - key: EMAIL_DELIVERY_MODE
-        value: smtp
-      # Resend SMTP relay (username is literally "resend"; password is the re_... API key).
-      - key: SMTP_HOST
-        value: smtp.resend.com
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USERNAME
+        value: resend
+      # The re_... API key from the Resend dashboard.
+      - key: RESEND_API_KEY
         sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: SMTP_FROM
+      # Verified sender, e.g. "NMEDA CEU Portal <certificates@nmeda.com>".
+      - key: RESEND_FROM
         sync: false
       # Shown in the do-not-reply footer of outgoing mail, e.g. amy.otley@nmeda.org
       - key: REPLY_CONTACT_EMAIL

@@ -189,6 +189,7 @@ def create_event(
         created_by_id=current_user.id,
         survey_token=uuid4().hex,
         test_token=uuid4().hex,
+        checkin_token=uuid4().hex,
         survey_questions=[
             {"id": "liked", "label": "What did you like about this course?"},
             {"id": "improve", "label": "What could we improve?"},

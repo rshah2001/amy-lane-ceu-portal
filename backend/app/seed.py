@@ -63,6 +63,8 @@ def main() -> None:
                 event.survey_token = uuid4().hex
             if not event.test_token:
                 event.test_token = uuid4().hex
+            if not event.checkin_token:
+                event.checkin_token = uuid4().hex
             if not event.certificate_template_path and template_path:
                 event.certificate_template_path = template_path
             if not event.survey_questions:
