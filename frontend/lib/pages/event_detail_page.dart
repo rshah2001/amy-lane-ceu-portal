@@ -58,6 +58,60 @@ class EventDetailPage extends StatelessWidget {
     }
   }
 
+  // Deleting an event permanently removes its uploads, attendee records, and
+  // certificates, so the dialog requires typing DELETE before proceeding.
+  Future<void> deleteEvent(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final controller = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text('Delete "${event.title}"?'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'This permanently removes the event with all of its uploads, '
+                  'attendance records, test and survey results, and issued '
+                  'certificates. Certificate verification links stop working. '
+                  'This cannot be undone.',
+                  style: TextStyle(color: Color(0xFFB42318)),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Type DELETE to confirm'),
+                  onChanged: (_) => setDialogState(() {}),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFB42318), foregroundColor: Colors.white),
+              onPressed: controller.text.trim() == 'DELETE' ? () => Navigator.pop(dialogContext, true) : null,
+              child: const Text('Delete event'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await session.api.delete('/events/${event.id}');
+      messenger.showSnackBar(SnackBar(content: Text('"${event.title}" was deleted.')));
+      onNavigate('back');
+    } catch (exception) {
+      messenger.showSnackBar(SnackBar(content: Text('Delete failed: $exception')));
+    }
+  }
+
   Future<void> distribute(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('Sending post-test and survey links to registered attendees...')));
@@ -115,12 +169,19 @@ class EventDetailPage extends StatelessWidget {
                 title: event.title,
                 subtitle: '${DateFormat.yMMMMd().format(event.eventDate)}  •  ${event.ceuHours.toStringAsFixed(1)} CEU hours',
                 actions: [
-                  if (isAdmin)
+                  if (isAdmin) ...[
                     OutlinedButton.icon(
                       onPressed: () => onNavigate('edit'),
                       icon: const Icon(Icons.edit_outlined, size: 18),
                       label: const Text('Edit event'),
                     ),
+                    OutlinedButton.icon(
+                      onPressed: () => deleteEvent(context),
+                      style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFB42318)),
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('Delete'),
+                    ),
+                  ],
                   StatusBadge(event.status.toUpperCase(), tone: BadgeTone.warning),
                 ],
               ),

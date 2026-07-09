@@ -1,13 +1,16 @@
+import shutil
 from collections import Counter
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_admin
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
@@ -234,6 +237,60 @@ def update_event(
     db.commit()
     db.refresh(event)
     return event
+
+
+@router.delete("/events/{event_id}", status_code=204)
+def delete_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> Response:
+    """Permanently remove an event and everything attached to it (attendees'
+    links, uploads, results, certificates). The deletion itself is audited
+    with what was destroyed; the global attendee records are untouched."""
+    event = db.scalar(select(TrainingEvent).where(TrainingEvent.id == event_id))
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    certificates = list(
+        db.scalars(
+            select(Certificate).join(EventAttendee).where(EventAttendee.event_id == event_id)
+        )
+    )
+    attendee_count = db.scalar(
+        select(func.count(EventAttendee.id)).where(EventAttendee.event_id == event_id)
+    ) or 0
+    # The audit row survives the delete (its event FK is SET NULL), keeping a
+    # permanent record of what was removed and by whom.
+    record_audit(
+        db,
+        "event.deleted",
+        "training_event",
+        event.id,
+        current_user,
+        event.id,
+        {
+            "title": event.title,
+            "event_date": event.event_date.isoformat(),
+            "attendees": attendee_count,
+            "certificates": len(certificates),
+            "certificates_sent": sum(1 for c in certificates if c.sent_at),
+        },
+    )
+    pdf_paths = [c.pdf_path for c in certificates]
+    # Certificates are deleted explicitly: their link relationship carries no
+    # ORM delete cascade, and relying on DB-level cascade alone would leave
+    # the ORM trying to NULL a non-nullable FK.
+    for certificate in certificates:
+        db.delete(certificate)
+    db.flush()
+    db.delete(event)
+    db.commit()
+    # Best-effort disk cleanup after the transaction commits.
+    for raw_path in pdf_paths:
+        Path(raw_path).unlink(missing_ok=True)
+    shutil.rmtree(settings.uploads_dir / str(event_id), ignore_errors=True)
+    shutil.rmtree(settings.certificates_dir / "templates" / str(event_id), ignore_errors=True)
+    return Response(status_code=204)
 
 
 @router.get("/events/{event_id}", response_model=EventOut)

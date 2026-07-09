@@ -66,6 +66,10 @@ class ApiClient {
     );
   }
 
+  Future<dynamic> delete(String path) async {
+    return _decode(await http.delete(Uri.parse('$baseUrl$path'), headers: _headers));
+  }
+
   Future<dynamic> uploadFile(
     String path,
     Uint8List bytes,

@@ -218,3 +218,37 @@ class TestAdminOnlyEndpoints:
         # to admin-only.
         response = client.get("/api/settings", headers=presenter.headers)
         assert response.status_code in (200, 403), response.text
+
+
+class TestDeleteEvent:
+    def test_admin_deletes_event_and_everything_attached(self, client, admin):
+        from helpers_api import upload_standard_roster, compliance_rows_by_name
+
+        event = create_event(client, admin.headers, title="Delete Me CEU")
+        upload_standard_roster(client, admin.headers, event["id"])
+        rows = compliance_rows_by_name(client, admin.headers, event["id"])
+        alice_id = rows["Alice Nguyen"]["id"]
+        client.post(
+            f"/api/events/{event['id']}/compliance/approve",
+            json={"event_attendee_ids": [alice_id], "approved": True},
+            headers=admin.headers,
+        )
+        number = client.post(
+            f"/api/events/{event['id']}/certificates/{alice_id}/generate",
+            headers=admin.headers,
+        ).json()["certificate_number"]
+
+        response = client.delete(f"/api/events/{event['id']}", headers=admin.headers)
+        assert response.status_code == 204, response.text
+
+        assert client.get(f"/api/events/{event['id']}", headers=admin.headers).status_code == 404
+        # The issued certificate is gone with the event.
+        assert client.get(f"/api/public/verify/{number}").json()["valid"] is False
+
+    def test_presenter_cannot_delete(self, client, admin, presenter):
+        event = create_event(client, admin.headers, assigned_presenter_id=presenter.id)
+        response = client.delete(f"/api/events/{event['id']}", headers=presenter.headers)
+        assert response.status_code == 403
+
+    def test_unknown_event_404(self, client, admin):
+        assert client.delete("/api/events/99999", headers=admin.headers).status_code == 404
