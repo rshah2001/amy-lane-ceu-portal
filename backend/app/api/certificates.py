@@ -15,7 +15,8 @@ from app.models.certificate import Certificate
 from app.models.certificate_email_log import CertificateEmailLog
 from app.models.event_attendee import EventAttendee
 from app.models.user import User
-from app.schemas.common import BulkActionResult, CertificateOut
+from app.schemas.common import BulkActionResult, CertificateOut, ManualIssueRequest
+from app.services.attendee_match import get_or_create_link, match_or_create_attendee
 from app.services.audit import record_audit
 from app.services.certificates import certificate_snapshot, generate_certificate_pdf, make_certificate_number
 from app.services.compliance import recalculate_event
@@ -226,6 +227,70 @@ def send_certificate(
     )
     db.commit()
     db.refresh(certificate)
+    return certificate
+
+
+@router.post("/issue", response_model=CertificateOut, status_code=201)
+def issue_certificate_manually(
+    event_id: int,
+    payload: ManualIssueRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> Certificate:
+    """Admin escape hatch: issue a certificate to anyone by name and email,
+    bypassing the eligibility rules. The person is added to the event (if not
+    already on it), approved, and the manual issue is audited."""
+    event = get_visible_event(db, event_id, current_user)
+    attendee = match_or_create_attendee(db, payload.full_name, str(payload.email))
+    link = get_or_create_link(db, event.id, attendee.id)
+    if not link.approved:
+        link.approved = True
+        link.approved_by_id = current_user.id
+        link.approved_at = datetime.now(timezone.utc)
+        link.compliance_status = "approved"
+    record_audit(
+        db,
+        "certificate.manually_issued",
+        "event_attendee",
+        link.id,
+        current_user,
+        event_id,
+        {
+            "attendee": attendee.full_name,
+            "email": attendee.email,
+            "met_requirements": link.eligible,
+            "missing_requirements": link.eligibility_reasons,
+        },
+    )
+    certificate = link.certificate
+    if not certificate:
+        number = make_certificate_number(event_id)
+        path = generate_certificate_pdf(link, number)
+        certificate = Certificate(
+            event_attendee_id=link.id,
+            certificate_number=number,
+            pdf_path=str(path),
+            generated_by_id=current_user.id,
+            template_version=event.certificate_template_version,
+            event_snapshot=certificate_snapshot(link),
+        )
+        db.add(certificate)
+        db.flush()
+        record_audit(
+            db,
+            "certificate.generated",
+            "certificate",
+            certificate.id,
+            current_user,
+            event_id,
+            {"certificate_number": number, "manual_issue": True},
+        )
+    db.commit()
+    db.refresh(certificate)
+    if payload.send_email:
+        # Reuses the send route's logging/failure handling; a 502 here means
+        # the certificate was issued but the email needs a resend.
+        return send_certificate(event_id, link.id, db, current_user)
     return certificate
 
 

@@ -149,6 +149,90 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
     }
   }
 
+  // Admin escape hatch: issue a certificate to anyone by name and email,
+  // bypassing the eligibility rules (audited on the backend).
+  Future<void> issueManually() async {
+    if (event == null) return;
+    final formKey = GlobalKey<FormState>();
+    final nameController = TextEditingController();
+    final emailController = TextEditingController();
+    var sendNow = true;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Issue a certificate manually'),
+          content: SizedBox(
+            width: 420,
+            child: Form(
+              key: formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'For "${event!.title}". The recipient does not need to meet the '
+                    'eligibility requirements — the manual issue is recorded in the audit log.',
+                    style: const TextStyle(fontSize: 13, color: Color(0xFF667085)),
+                  ),
+                  const SizedBox(height: 14),
+                  TextFormField(
+                    controller: nameController,
+                    autofocus: true,
+                    decoration: const InputDecoration(labelText: 'Full name'),
+                    validator: (v) => v == null || v.trim().length < 2 ? 'Enter the recipient name' : null,
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(labelText: 'Email address'),
+                    validator: emailValidator,
+                  ),
+                  const SizedBox(height: 6),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    value: sendNow,
+                    onChanged: (value) => setDialogState(() => sendNow = value ?? true),
+                    title: const Text('Email the certificate now'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () {
+                if (formKey.currentState!.validate()) Navigator.pop(context, true);
+              },
+              child: const Text('Issue certificate'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => error = null);
+    try {
+      await widget.session.api.post('/events/${event!.id}/certificates/issue', {
+        'full_name': nameController.text.trim(),
+        'email': emailController.text.trim(),
+        'send_email': sendNow,
+      });
+      messenger.showSnackBar(SnackBar(
+        content: Text(sendNow
+            ? 'Certificate issued and emailed to ${emailController.text.trim()}.'
+            : 'Certificate issued for ${nameController.text.trim()}.'),
+      ));
+      await loadRecords();
+    } catch (exception) {
+      if (mounted) setState(() => error = exception.toString());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final visibleRecords = records?.where((record) => record.approved || record.eligible).toList();
@@ -164,6 +248,11 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                 title: 'Certificate Center',
                 subtitle: 'Preview, generate, send, and preserve issued certificate versions.',
                 actions: [
+                  ElevatedButton.icon(
+                    onPressed: event == null ? null : issueManually,
+                    icon: const Icon(Icons.workspace_premium_outlined),
+                    label: const Text('Issue certificate'),
+                  ),
                   OutlinedButton.icon(
                     onPressed: event == null || uploadingTemplate ? null : uploadTemplate,
                     icon: uploadingTemplate

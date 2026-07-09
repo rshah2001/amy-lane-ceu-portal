@@ -56,11 +56,47 @@ class _CompliancePageState extends State<CompliancePage> {
 
   Future<void> approve() async {
     if (selected.isEmpty) return;
+    // Approving someone who doesn't meet the requirements is allowed for
+    // admins, but only after an explicit, per-name confirmation.
+    final ineligible = records!.where((r) => selected.contains(r.id) && !r.eligible).toList();
+    if (ineligible.isNotEmpty) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Approve without eligibility?'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('These attendees do not meet the requirements. Approving them anyway is recorded in the audit log:'),
+                const SizedBox(height: 10),
+                for (final record in ineligible)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      '• ${record.fullName} — ${record.reasons.join(', ')}',
+                      style: const TextStyle(fontSize: 13, color: Color(0xFFB42318)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Approve anyway')),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
     setState(() => working = true);
     try {
       await widget.session.api.post('/events/${widget.event.id}/compliance/approve', {
         'event_attendee_ids': selected.toList(),
         'approved': true,
+        if (ineligible.isNotEmpty) 'override': true,
       });
       selected.clear();
       await load();
@@ -191,7 +227,9 @@ class _CompliancePageState extends State<CompliancePage> {
                                       .map(
                                         (record) => DataRow(
                                           selected: selected.contains(record.id),
-                                          onSelectChanged: !widget.session.user!.isAdmin || !record.eligible || record.approved
+                                          // Admins can select ineligible rows too; approving them
+                                          // asks for an explicit override confirmation.
+                                          onSelectChanged: !widget.session.user!.isAdmin || record.approved
                                               ? null
                                               : (value) => setState(() => value == true ? selected.add(record.id) : selected.remove(record.id)),
                                           cells: [

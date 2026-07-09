@@ -95,7 +95,8 @@ def approve_attendees(
     if len(links) != len(set(payload.event_attendee_ids)):
         raise HTTPException(status_code=404, detail="One or more attendees were not found")
     for link in links:
-        if payload.approved and not link.eligible:
+        overridden = payload.approved and not link.eligible
+        if overridden and not payload.override:
             raise HTTPException(
                 status_code=409,
                 detail=f"{link.attendee.full_name} is not eligible and cannot be approved",
@@ -106,11 +107,13 @@ def approve_attendees(
         link.compliance_status = "approved" if payload.approved else "eligible"
         record_audit(
             db,
+            "attendee.approved_override" if overridden else
             "attendee.approved" if payload.approved else "attendee.approval_revoked",
             "event_attendee",
             link.id,
             current_user,
             event_id,
+            {"waived_requirements": link.eligibility_reasons} if overridden else None,
         )
     db.commit()
     return [serialize_link(link) for link in links]

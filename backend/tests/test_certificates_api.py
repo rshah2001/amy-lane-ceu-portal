@@ -185,3 +185,93 @@ class TestPublicVerification:
     def test_download_of_unknown_certificate_returns_404(self, client):
         response = client.get("/api/public/verify/CEU-00000-DOESNOTEXIST/download")
         assert response.status_code == 404, response.text
+
+
+class TestManualIssue:
+    def test_admin_issues_certificate_to_anyone(self, client, admin, event):
+        response = client.post(
+            f"/api/events/{event['id']}/certificates/issue",
+            json={"full_name": "Walk In", "email": "walk.in@example.com"},
+            headers=admin.headers,
+        )
+        assert response.status_code == 201, response.text
+        number = response.json()["certificate_number"]
+        assert number.startswith("CEU-")
+
+        verify = client.get(f"/api/public/verify/{number}").json()
+        assert verify["valid"] is True
+        assert verify["attendee_name"] == "Walk In"
+
+        rows = client.get(
+            f"/api/events/{event['id']}/compliance", headers=admin.headers
+        ).json()
+        row = next(r for r in rows if r["email"] == "walk.in@example.com")
+        assert row["approved"] is True
+        assert row["eligible"] is False  # never attended or tested — by design
+
+    def test_issue_with_send_email_records_sent_at(self, client, admin, event):
+        response = client.post(
+            f"/api/events/{event['id']}/certificates/issue",
+            json={"full_name": "Mail Me", "email": "mail.me@example.com", "send_email": True},
+            headers=admin.headers,
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["sent_at"] is not None
+        assert body["last_sent_to"] == "mail.me@example.com"
+
+    def test_reissue_returns_the_same_certificate(self, client, admin, event):
+        payload = {"full_name": "Once Only", "email": "once.only@example.com"}
+        first = client.post(
+            f"/api/events/{event['id']}/certificates/issue", json=payload, headers=admin.headers
+        ).json()
+        second = client.post(
+            f"/api/events/{event['id']}/certificates/issue", json=payload, headers=admin.headers
+        ).json()
+        assert first["certificate_number"] == second["certificate_number"]
+
+    def test_presenter_cannot_manually_issue(self, client, admin, presenter):
+        event = create_event(client, admin.headers, assigned_presenter_id=presenter.id)
+        response = client.post(
+            f"/api/events/{event['id']}/certificates/issue",
+            json={"full_name": "Walk In", "email": "walk.in@example.com"},
+            headers=presenter.headers,
+        )
+        assert response.status_code == 403
+
+
+class TestOverrideApprove:
+    def test_override_approves_ineligible_attendee(self, client, admin, event, rows):
+        bob_id = rows["Bob Ramos"]["id"]  # scored 70 — ineligible
+        blocked = client.post(
+            f"/api/events/{event['id']}/compliance/approve",
+            json={"event_attendee_ids": [bob_id], "approved": True},
+            headers=admin.headers,
+        )
+        assert blocked.status_code == 409
+
+        overridden = client.post(
+            f"/api/events/{event['id']}/compliance/approve",
+            json={"event_attendee_ids": [bob_id], "approved": True, "override": True},
+            headers=admin.headers,
+        )
+        assert overridden.status_code == 200, overridden.text
+        assert overridden.json()[0]["approved"] is True
+
+        generated = generate(client, admin.headers, event["id"], bob_id)
+        assert generated.status_code == 200, generated.text
+
+    def test_override_survives_recalculation(self, client, admin, event, rows):
+        bob_id = rows["Bob Ramos"]["id"]
+        client.post(
+            f"/api/events/{event['id']}/compliance/approve",
+            json={"event_attendee_ids": [bob_id], "approved": True, "override": True},
+            headers=admin.headers,
+        )
+        # The compliance listing recalculates eligibility; approval must stick.
+        rows_after = client.get(
+            f"/api/events/{event['id']}/compliance", headers=admin.headers
+        ).json()
+        bob = next(r for r in rows_after if r["id"] == bob_id)
+        assert bob["approved"] is True
+        assert bob["compliance_status"] == "approved"

@@ -161,6 +161,17 @@ class ComplianceRow(BaseModel):
 class ApprovalRequest(BaseModel):
     event_attendee_ids: list[int]
     approved: bool = True
+    # Admin escape hatch: approve even when the eligibility rules aren't met
+    # (e.g. a paper post-test that was never uploaded). Audited per attendee.
+    override: bool = False
+
+
+class ManualIssueRequest(BaseModel):
+    """Admin-issued certificate for anyone, bypassing the eligibility rules."""
+
+    full_name: str = Field(min_length=2, max_length=255)
+    email: EmailStr
+    send_email: bool = False
 
 
 class CertificateOut(BaseModel):
