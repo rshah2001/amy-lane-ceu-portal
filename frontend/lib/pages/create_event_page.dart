@@ -6,9 +6,12 @@ import '../models/models.dart';
 import '../widgets/common.dart';
 
 class CreateEventPage extends StatefulWidget {
-  const CreateEventPage({super.key, required this.session, required this.onCreated});
+  const CreateEventPage({super.key, required this.session, required this.onSaved, this.event});
   final SessionController session;
-  final ValueChanged<TrainingEvent> onCreated;
+
+  /// When set, the page edits this existing event instead of creating one.
+  final TrainingEvent? event;
+  final ValueChanged<TrainingEvent> onSaved;
 
   @override
   State<CreateEventPage> createState() => _CreateEventPageState();
@@ -17,10 +20,11 @@ class CreateEventPage extends StatefulWidget {
 class _CreateEventPageState extends State<CreateEventPage> {
   final formKey = GlobalKey<FormState>();
   final title = TextEditingController();
+  final titleFocus = FocusNode();
   final description = TextEditingController();
   final location = TextEditingController();
+  final locationFocus = FocusNode();
   final presenter = TextEditingController();
-  final courseInstructor = TextEditingController();
   final hours = TextEditingController(text: '1.0');
   final postTestUrl = TextEditingController();
   final externalSurveyUrl = TextEditingController();
@@ -30,16 +34,44 @@ class _CreateEventPageState extends State<CreateEventPage> {
   bool surveyRequired = false;
   String testMode = 'external';
   final List<_QuestionDraft> testQuestions = [];
+  final List<_SurveyQuestionDraft> surveyQuestions = [];
   DateTime date = DateTime.now().add(const Duration(days: 14));
   List<Map<String, dynamic>> presenters = [];
   int? assignedPresenterId;
   bool saving = false;
   String? error;
 
+  bool get isEdit => widget.event != null;
+
   @override
   void initState() {
     super.initState();
+    final event = widget.event;
+    if (event != null) _prefill(event);
     loadPresenters();
+  }
+
+  void _prefill(TrainingEvent event) {
+    title.text = event.title;
+    description.text = event.description ?? '';
+    location.text = event.location ?? '';
+    presenter.text = event.presenterName ?? '';
+    hours.text = event.ceuHours.toStringAsFixed(1);
+    postTestUrl.text = event.postTestUrl ?? '';
+    externalSurveyUrl.text = event.externalSurveyUrl ?? '';
+    certificateTitle.text = event.certificateTitle;
+    eventType = event.eventType;
+    surveyMode = event.surveyMode;
+    surveyRequired = event.surveyRequired;
+    testMode = event.testMode;
+    date = event.eventDate;
+    assignedPresenterId = event.assignedPresenterId;
+    for (final question in event.testQuestions) {
+      testQuestions.add(_QuestionDraft.fromJson(question));
+    }
+    for (final question in event.surveyQuestions) {
+      surveyQuestions.add(_SurveyQuestionDraft.fromJson(question));
+    }
   }
 
   Future<void> loadPresenters() async {
@@ -53,22 +85,26 @@ class _CreateEventPageState extends State<CreateEventPage> {
             .toList();
       });
     } catch (_) {
-      // Non-fatal: the event can still be created without an assignment.
+      // Non-fatal: the event can still be saved without an assignment.
     }
   }
 
   @override
   void dispose() {
     title.dispose();
+    titleFocus.dispose();
     description.dispose();
     location.dispose();
+    locationFocus.dispose();
     presenter.dispose();
-    courseInstructor.dispose();
     hours.dispose();
     postTestUrl.dispose();
     externalSurveyUrl.dispose();
     certificateTitle.dispose();
     for (final question in testQuestions) {
+      question.dispose();
+    }
+    for (final question in surveyQuestions) {
       question.dispose();
     }
     super.dispose();
@@ -85,6 +121,17 @@ class _CreateEventPageState extends State<CreateEventPage> {
     });
   }
 
+  void addSurveyQuestion() {
+    setState(() => surveyQuestions.add(_SurveyQuestionDraft()));
+  }
+
+  void removeSurveyQuestion(_SurveyQuestionDraft question) {
+    setState(() {
+      surveyQuestions.remove(question);
+      question.dispose();
+    });
+  }
+
   Future<void> save() async {
     if (!formKey.currentState!.validate()) return;
     if (testMode == 'internal' && testQuestions.isEmpty) {
@@ -95,30 +142,37 @@ class _CreateEventPageState extends State<CreateEventPage> {
       saving = true;
       error = null;
     });
+    final body = <String, dynamic>{
+      'title': title.text.trim(),
+      'description': description.text.trim().isEmpty ? null : description.text.trim(),
+      'event_date': DateFormat('yyyy-MM-dd').format(date),
+      'ceu_hours': double.parse(hours.text),
+      'location': location.text.trim().isEmpty ? null : location.text.trim(),
+      'presenter_name': presenter.text.trim().isEmpty ? null : presenter.text.trim(),
+      'event_type': eventType,
+      'post_test_url': testMode == 'external' && postTestUrl.text.trim().isNotEmpty ? postTestUrl.text.trim() : null,
+      'test_mode': testMode,
+      'test_questions': testMode == 'internal'
+          ? [for (var i = 0; i < testQuestions.length; i++) testQuestions[i].toJson('q${i + 1}')]
+          : <Map<String, dynamic>>[],
+      'survey_mode': surveyMode,
+      'survey_required': surveyRequired,
+      'external_survey_url': surveyMode == 'external' && externalSurveyUrl.text.trim().isNotEmpty
+          ? externalSurveyUrl.text.trim()
+          : null,
+      'certificate_title': certificateTitle.text.trim(),
+      'assigned_presenter_id': assignedPresenterId,
+      // Only sent when editing: the create flow lets the server seed its
+      // default survey questions. An empty list is omitted so the PUT never
+      // wipes the server-side questions by accident.
+      if (isEdit && surveyMode == 'internal' && surveyQuestions.isNotEmpty)
+        'survey_questions': [for (var i = 0; i < surveyQuestions.length; i++) surveyQuestions[i].toJson('s${i + 1}')],
+    };
     try {
-      final json = await widget.session.api.post('/events', {
-        'title': title.text.trim(),
-        'description': description.text.trim().isEmpty ? null : description.text.trim(),
-        'event_date': DateFormat('yyyy-MM-dd').format(date),
-        'ceu_hours': double.parse(hours.text),
-        'location': location.text.trim().isEmpty ? null : location.text.trim(),
-        'presenter_name': presenter.text.trim().isEmpty ? null : presenter.text.trim(),
-        'course_instructor': courseInstructor.text.trim().isEmpty ? null : courseInstructor.text.trim(),
-        'event_type': eventType,
-        'post_test_url': testMode == 'external' && postTestUrl.text.trim().isNotEmpty ? postTestUrl.text.trim() : null,
-        'test_mode': testMode,
-        'test_questions': testMode == 'internal'
-            ? [for (var i = 0; i < testQuestions.length; i++) testQuestions[i].toJson('q${i + 1}')]
-            : <Map<String, dynamic>>[],
-        'survey_mode': surveyMode,
-        'survey_required': surveyRequired,
-        'external_survey_url': surveyMode == 'external' && externalSurveyUrl.text.trim().isNotEmpty
-            ? externalSurveyUrl.text.trim()
-            : null,
-        'certificate_title': certificateTitle.text.trim(),
-        'assigned_presenter_id': assignedPresenterId,
-      }) as Map<String, dynamic>;
-      widget.onCreated(TrainingEvent.fromJson(json));
+      final json = isEdit
+          ? await widget.session.api.put('/events/${widget.event!.id}', body)
+          : await widget.session.api.post('/events', body);
+      widget.onSaved(TrainingEvent.fromJson(json as Map<String, dynamic>));
     } catch (exception) {
       if (mounted) setState(() => error = exception.toString());
     } finally {
@@ -136,7 +190,12 @@ class _CreateEventPageState extends State<CreateEventPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const PageHeader(title: 'Create Event', subtitle: 'Set up the event record before uploading compliance documents.'),
+              PageHeader(
+                title: isEdit ? 'Edit Event' : 'Create Event',
+                subtitle: isEdit
+                    ? 'Update event details, post-test questions, and survey settings.'
+                    : 'Set up the event record before uploading compliance documents.',
+              ),
               const SizedBox(height: 20),
               Card(
                 child: Padding(
@@ -146,9 +205,11 @@ class _CreateEventPageState extends State<CreateEventPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        TextFormField(
+                        _SuggestTextField(
                           controller: title,
-                          decoration: const InputDecoration(labelText: 'Event title'),
+                          focusNode: titleFocus,
+                          label: 'Event title',
+                          suggestion: 'CAMS Lunch & Learn',
                           validator: (value) => value == null || value.trim().length < 2 ? 'Enter an event title' : null,
                         ),
                         const SizedBox(height: 16),
@@ -163,9 +224,10 @@ class _CreateEventPageState extends State<CreateEventPage> {
                             final fields = [
                               InkWell(
                                 onTap: () async {
+                                  final earliest = DateTime.now().subtract(const Duration(days: 365));
                                   final selected = await showDatePicker(
                                     context: context,
-                                    firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                                    firstDate: date.isBefore(earliest) ? date : earliest,
                                     lastDate: DateTime.now().add(const Duration(days: 3650)),
                                     initialDate: date,
                                   );
@@ -180,7 +242,12 @@ class _CreateEventPageState extends State<CreateEventPage> {
                                 controller: hours,
                                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                                 decoration: const InputDecoration(labelText: 'CEU hours'),
-                                validator: (value) => double.tryParse(value ?? '') == null ? 'Enter valid hours' : null,
+                                validator: (value) {
+                                  final parsed = double.tryParse(value?.trim() ?? '');
+                                  if (parsed == null) return 'Enter valid hours';
+                                  if (parsed <= 0) return 'Hours must be greater than zero';
+                                  return null;
+                                },
                               ),
                             ];
                             if (constraints.maxWidth < 620) {
@@ -190,15 +257,18 @@ class _CreateEventPageState extends State<CreateEventPage> {
                           },
                         ),
                         const SizedBox(height: 16),
-                        TextFormField(controller: location, decoration: const InputDecoration(labelText: 'Location')),
-                        const SizedBox(height: 16),
-                        TextFormField(controller: presenter, decoration: const InputDecoration(labelText: 'Presenter name')),
+                        _SuggestTextField(
+                          controller: location,
+                          focusNode: locationFocus,
+                          label: 'Location',
+                          suggestion: 'Live Virtual',
+                        ),
                         const SizedBox(height: 16),
                         TextFormField(
-                          controller: courseInstructor,
+                          controller: presenter,
                           decoration: const InputDecoration(
-                            labelText: 'Course instructor (prints on certificate)',
-                            hintText: 'Defaults to the presenter if left blank',
+                            labelText: 'Presenter name(s)',
+                            helperText: "For two presenters, separate with ' & ' — both appear on the certificate",
                           ),
                         ),
                         const SizedBox(height: 16),
@@ -251,6 +321,7 @@ class _CreateEventPageState extends State<CreateEventPage> {
                               prefixIcon: Icon(Icons.link),
                               hintText: 'Google Forms or another testing system',
                             ),
+                            validator: (value) => testMode == 'external' ? optionalUrlValidator(value) : null,
                           ),
                         ] else ...[
                           const SizedBox(height: 12),
@@ -289,23 +360,43 @@ class _CreateEventPageState extends State<CreateEventPage> {
                             controller: externalSurveyUrl,
                             keyboardType: TextInputType.url,
                             decoration: const InputDecoration(labelText: 'External survey URL'),
-                            validator: (value) => surveyMode == 'external' && (value == null || value.trim().isEmpty)
-                                ? 'Enter the external survey URL'
-                                : null,
+                            validator: (value) {
+                              if (surveyMode != 'external') return null;
+                              if (value == null || value.trim().isEmpty) return 'Enter the external survey URL';
+                              return optionalUrlValidator(value);
+                            },
+                          ),
+                        ] else if (isEdit) ...[
+                          const SizedBox(height: 12),
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Survey questions attendees are asked. Edits replace the current list.',
+                              style: TextStyle(fontSize: 12, color: Color(0xFF667085)),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          for (var i = 0; i < surveyQuestions.length; i++) ...[
+                            _SurveyQuestionEditor(
+                              index: i + 1,
+                              draft: surveyQuestions[i],
+                              onRemove: () => removeSurveyQuestion(surveyQuestions[i]),
+                            ),
+                            const SizedBox(height: 10),
+                          ],
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: OutlinedButton.icon(
+                              onPressed: addSurveyQuestion,
+                              icon: const Icon(Icons.add),
+                              label: const Text('Add survey question'),
+                            ),
                           ),
                         ],
                         const SizedBox(height: 8),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
+                        _SurveyRequiredToggle(
                           value: surveyRequired,
                           onChanged: (value) => setState(() => surveyRequired = value),
-                          title: const Text('Require survey to earn a certificate'),
-                          subtitle: Text(
-                            surveyRequired
-                                ? 'Attendees must complete the feedback survey to be eligible.'
-                                : 'Survey is optional (encouraged but does not block certificates).',
-                            style: const TextStyle(fontSize: 12, color: Color(0xFF667085)),
-                          ),
                         ),
                         const SizedBox(height: 16),
                         TextFormField(
@@ -325,7 +416,7 @@ class _CreateEventPageState extends State<CreateEventPage> {
                             icon: saving
                                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                                 : const Icon(Icons.save_outlined),
-                            label: const Text('Create event'),
+                            label: Text(isEdit ? 'Save changes' : 'Create event'),
                           ),
                         ),
                       ],
@@ -341,17 +432,140 @@ class _CreateEventPageState extends State<CreateEventPage> {
   }
 }
 
+/// Free-text field that also offers a canned suggestion (combo-box style) for
+/// the values the client reuses on nearly every event.
+class _SuggestTextField extends StatelessWidget {
+  const _SuggestTextField({
+    required this.controller,
+    required this.focusNode,
+    required this.label,
+    required this.suggestion,
+    this.validator,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final String label;
+  final String suggestion;
+  final String? Function(String?)? validator;
+
+  @override
+  Widget build(BuildContext context) {
+    return RawAutocomplete<String>(
+      textEditingController: controller,
+      focusNode: focusNode,
+      optionsBuilder: (value) {
+        final text = value.text.trim().toLowerCase();
+        // Hide the popup once the suggestion is already typed exactly.
+        if (text == suggestion.toLowerCase()) return const Iterable<String>.empty();
+        if (text.isEmpty || suggestion.toLowerCase().contains(text)) return <String>[suggestion];
+        return const Iterable<String>.empty();
+      },
+      fieldViewBuilder: (context, textController, fieldFocusNode, onFieldSubmitted) => TextFormField(
+        controller: textController,
+        focusNode: fieldFocusNode,
+        decoration: InputDecoration(labelText: label, suffixIcon: const Icon(Icons.arrow_drop_down)),
+        validator: validator,
+        onFieldSubmitted: (_) => onFieldSubmitted(),
+      ),
+      optionsViewBuilder: (context, onSelected, options) => Align(
+        alignment: Alignment.topLeft,
+        child: Material(
+          elevation: 4,
+          borderRadius: BorderRadius.circular(8),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: ListView(
+              shrinkWrap: true,
+              padding: EdgeInsets.zero,
+              children: [
+                for (final option in options)
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.star_outline, size: 18),
+                    title: Text(option),
+                    onTap: () => onSelected(option),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Survey requirement switch with an unmistakable written state, so on/off is
+/// never ambiguous: green "Required" pill when on, red-tinted "Optional" when off.
+class _SurveyRequiredToggle extends StatelessWidget {
+  const _SurveyRequiredToggle({required this.value, required this.onChanged});
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Switch(
+          value: value,
+          activeTrackColor: const Color(0xFF12805C),
+          onChanged: onChanged,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Require survey to earn a certificate'),
+              const SizedBox(height: 2),
+              Text(
+                value
+                    ? 'Attendees must complete the feedback survey to be eligible.'
+                    : 'Survey is optional (encouraged but does not block certificates).',
+                style: const TextStyle(fontSize: 12, color: Color(0xFF667085)),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        StatusBadge(
+          value ? 'Required' : 'Optional',
+          tone: value ? BadgeTone.success : BadgeTone.danger,
+        ),
+      ],
+    );
+  }
+}
+
 class _QuestionDraft {
   _QuestionDraft()
-      : prompt = TextEditingController(),
+      : id = null,
+        prompt = TextEditingController(),
         choices = [TextEditingController(), TextEditingController(), TextEditingController(), TextEditingController()];
 
+  _QuestionDraft.fromJson(Map<String, dynamic> json)
+      : id = json['id']?.toString(),
+        prompt = TextEditingController(text: json['prompt']?.toString() ?? ''),
+        choices = [
+          for (final choice in (json['choices'] as List?) ?? const []) TextEditingController(text: choice.toString()),
+        ],
+        correctIndex = json['correct_index'] as int? ?? 0 {
+    while (choices.length < 4) {
+      choices.add(TextEditingController());
+    }
+    if (correctIndex >= choices.length) correctIndex = 0;
+  }
+
+  /// Original question id when editing, so existing test submissions keep
+  /// pointing at the same question. New questions get a positional id.
+  final String? id;
   final TextEditingController prompt;
   final List<TextEditingController> choices;
   int correctIndex = 0;
 
-  Map<String, dynamic> toJson(String id) => {
-        'id': id,
+  Map<String, dynamic> toJson(String fallbackId) => {
+        'id': id ?? fallbackId,
         'prompt': prompt.text.trim(),
         'choices': [for (final choice in choices) choice.text.trim()],
         'correct_index': correctIndex,
@@ -362,6 +576,64 @@ class _QuestionDraft {
     for (final choice in choices) {
       choice.dispose();
     }
+  }
+}
+
+class _SurveyQuestionDraft {
+  _SurveyQuestionDraft()
+      : id = null,
+        label = TextEditingController();
+
+  _SurveyQuestionDraft.fromJson(Map<String, dynamic> json)
+      : id = json['id']?.toString(),
+        label = TextEditingController(text: json['label']?.toString() ?? '');
+
+  /// Original question id when editing, so past answers keyed by question id
+  /// still line up. New questions get a positional id.
+  final String? id;
+  final TextEditingController label;
+
+  Map<String, dynamic> toJson(String fallbackId) => {
+        'id': id ?? fallbackId,
+        'label': label.text.trim(),
+      };
+
+  void dispose() {
+    label.dispose();
+  }
+}
+
+class _SurveyQuestionEditor extends StatelessWidget {
+  const _SurveyQuestionEditor({
+    required this.index,
+    required this.draft,
+    required this.onRemove,
+  });
+
+  final int index;
+  final _SurveyQuestionDraft draft;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: TextFormField(
+            controller: draft.label,
+            decoration: InputDecoration(labelText: 'Survey question $index'),
+            validator: (value) => value == null || value.trim().isEmpty ? 'Enter the question or remove it' : null,
+          ),
+        ),
+        const SizedBox(width: 4),
+        IconButton(
+          tooltip: 'Remove survey question',
+          onPressed: onRemove,
+          icon: const Icon(Icons.delete_outline, size: 20),
+        ),
+      ],
+    );
   }
 }
 

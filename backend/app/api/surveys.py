@@ -64,19 +64,15 @@ def submit_public_survey(
     event = get_survey_event(db, token)
     attendee = match_or_create_attendee(db, payload.full_name, str(payload.email))
     link = get_or_create_link(db, event.id, attendee.id)
-    result = db.scalar(
-        select(SurveyResult).where(
-            SurveyResult.event_id == event.id,
-            SurveyResult.attendee_id == attendee.id,
-        )
-    )
-    if not result:
-        result = SurveyResult(event_id=event.id, attendee_id=attendee.id)
-        db.add(result)
+    # Every submission is kept as its own row: the same attendee may answer
+    # more than once and admins want to see all responses, not just the last.
+    result = SurveyResult(event_id=event.id, attendee_id=attendee.id, source="web")
+    db.add(result)
     result.completed = True
     result.completed_at = datetime.now(timezone.utc)
     result.raw_payload = payload.answers
     link.survey_completed = True
+    db.flush()
     recalculate_event(db, event.id)
     record_audit(
         db,

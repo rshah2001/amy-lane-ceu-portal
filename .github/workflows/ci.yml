@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same branch/PR to save runner minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Match backend/Dockerfile (python:3.13-slim).
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # app/services/csv_import.py imports pytesseract at module level; the
+      # Python package works without the binary, but installing tesseract-ocr
+      # mirrors the production image (backend/Dockerfile) and lets OCR code
+      # paths run for real if exercised.
+      - name: Install system dependencies (Tesseract OCR)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      # Tests run against in-memory SQLite, so no Postgres service is needed.
+      #
+      # The PNG OCR test is deselected because its fixture renders text with
+      # the macOS-only font /System/Library/Fonts/Supplemental/Arial.ttf, so
+      # ImageFont.truetype raises OSError on Linux runners before OCR is even
+      # attempted. Re-enable it once the fixture uses a portable font
+      # (tesseract-ocr itself is already installed above).
+      - name: Run tests
+        run: python -m pytest tests -k "not test_png_ocr_extracts_comma_separated_table_text"
+
+  frontend:
+    name: Frontend analyze & test (Flutter)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      # frontend/test/widget_test.dart is a real smoke test (renders the login
+      # screen for an unauthenticated session), not the stock counter test.
+      - name: Test
+        run: flutter test

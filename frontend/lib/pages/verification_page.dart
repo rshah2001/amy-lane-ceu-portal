@@ -38,7 +38,13 @@ class _VerificationPageState extends State<VerificationPage> {
 
   Future<void> verify() async {
     final number = controller.text.trim();
-    if (number.isEmpty) return;
+    if (number.isEmpty) {
+      setState(() {
+        error = 'Enter a certificate number to verify.';
+        result = null;
+      });
+      return;
+    }
     setState(() {
       loading = true;
       error = null;

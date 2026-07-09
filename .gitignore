@@ -1,5 +1,10 @@
 .DS_Store
 .env
+# Also ignore .env variants (.env.local, .env.production, ...) but keep the
+# committed templates.
+.env.*
+!.env.example
+!.env.production.example
 .venv/
 .claude/
 .idea/
@@ -16,3 +21,6 @@ frontend/build/
 frontend/.flutter-plugins*
 frontend/.idea/
 frontend/*.iml
+# Created by `npx vercel` deploys.
+.vercel/
+node_modules/

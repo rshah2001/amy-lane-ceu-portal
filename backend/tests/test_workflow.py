@@ -12,7 +12,13 @@ from app.db.base import Base
 from app.models.event_attendee import EventAttendee
 from app.models.training_event import TrainingEvent
 from app.models.user import User
-from app.services.csv_import import parse_image_bytes, parse_xlsx_bytes, process_csv, process_document
+from app.services.csv_import import (
+    parse_image_bytes,
+    parse_pdf_bytes,
+    parse_xlsx_bytes,
+    process_csv,
+    process_document,
+)
 
 
 class ComplianceWorkflowTest(unittest.TestCase):
@@ -132,6 +138,33 @@ class ComplianceWorkflowTest(unittest.TestCase):
 
         rows, warnings = parse_image_bytes(output.getvalue())
         self.assertGreaterEqual(len(warnings), 1)
+        self.assertEqual(rows[0]["Full Name"], "Maya Chen")
+        self.assertEqual(rows[0]["Email"], "maya.chen@example.com")
+
+    def test_scanned_pdf_falls_back_to_embedded_image_ocr(self) -> None:
+        # Scan-to-PDF: a page with no text layer, only an embedded photo of the
+        # sign-in sheet. The PDF parser must OCR the embedded image.
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfgen.canvas import Canvas
+
+        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 30)
+        image = Image.new("RGB", (1400, 220), "white")
+        draw = ImageDraw.Draw(image)
+        draw.text((30, 30), "Full Name | Email | Company", font=font, fill="black")
+        draw.text(
+            (30, 100),
+            "Maya Chen | maya.chen@example.com | Northline",
+            font=font,
+            fill="black",
+        )
+
+        output = BytesIO()
+        canvas = Canvas(output, pagesize=(700, 110))
+        canvas.drawImage(ImageReader(image), 0, 0, width=700, height=110)
+        canvas.save()
+
+        rows, warnings = parse_pdf_bytes(output.getvalue())
+        self.assertTrue(any("best-effort" in w["message"] for w in warnings))
         self.assertEqual(rows[0]["Full Name"], "Maya Chen")
         self.assertEqual(rows[0]["Email"], "maya.chen@example.com")
 

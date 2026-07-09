@@ -16,6 +16,7 @@ class NotificationCenterPage extends StatefulWidget {
 class _NotificationCenterPageState extends State<NotificationCenterPage> {
   List<Map<String, dynamic>>? items;
   String? error;
+  bool markingAll = false;
 
   @override
   void initState() {
@@ -37,11 +38,14 @@ class _NotificationCenterPageState extends State<NotificationCenterPage> {
   }
 
   Future<void> markAllRead() async {
+    setState(() => markingAll = true);
     try {
       await widget.session.api.post('/notifications/read-all');
       await load();
     } catch (exception) {
       if (mounted) setState(() => error = exception.toString());
+    } finally {
+      if (mounted) setState(() => markingAll = false);
     }
   }
 
@@ -75,7 +79,11 @@ class _NotificationCenterPageState extends State<NotificationCenterPage> {
                 subtitle: 'Alerts from presenters and the compliance workflow.',
                 actions: [
                   OutlinedButton.icon(onPressed: load, icon: const Icon(Icons.refresh), label: const Text('Refresh')),
-                  ElevatedButton.icon(onPressed: markAllRead, icon: const Icon(Icons.done_all), label: const Text('Mark all read')),
+                  ElevatedButton.icon(
+                    onPressed: items == null || items!.isEmpty || markingAll ? null : markAllRead,
+                    icon: const Icon(Icons.done_all),
+                    label: Text(markingAll ? 'Marking...' : 'Mark all read'),
+                  ),
                 ],
               ),
               if (error != null) ...[
@@ -88,7 +96,11 @@ class _NotificationCenterPageState extends State<NotificationCenterPage> {
                   child: items == null
                       ? const LoadingPanel()
                       : items!.isEmpty
-                          ? const Center(child: Text('No notifications yet.'))
+                          ? const EmptyState(
+                              icon: Icons.notifications_none_outlined,
+                              message: 'No notifications yet',
+                              detail: 'Alerts from presenters and the compliance workflow will appear here.',
+                            )
                           : ListView.separated(
                               padding: const EdgeInsets.all(6),
                               itemCount: items!.length,

@@ -85,7 +85,7 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 720),
-            child: error != null
+            child: error != null && survey == null
                 ? ErrorPanel(message: error!, onRetry: load)
                 : survey == null
                     ? const LoadingPanel()
@@ -121,7 +121,7 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
                                     const SizedBox(height: 24),
                                     TextFormField(controller: name, decoration: const InputDecoration(labelText: 'Full name'), validator: (value) => value == null || value.trim().length < 2 ? 'Enter your name' : null),
                                     const SizedBox(height: 14),
-                                    TextFormField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email address'), validator: (value) => value == null || !value.contains('@') ? 'Enter a valid email' : null),
+                                    TextFormField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email address'), validator: emailValidator),
                                     for (final question in survey!['questions'] as List) ...[
                                       const SizedBox(height: 18),
                                       TextFormField(

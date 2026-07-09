@@ -131,13 +131,31 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
                   child: responses == null
                       ? const LoadingPanel()
                       : responses!.isEmpty
-                          ? const Center(child: Text('No survey responses match this view.'))
-                          : ListView.separated(
-                              padding: const EdgeInsets.all(8),
-                              itemCount: responses!.length,
-                              separatorBuilder: (_, __) => divider,
-                              itemBuilder: (context, index) => _ResponseTile(response: responses![index]),
-                            ),
+                          ? const EmptyState(
+                              icon: Icons.rate_review_outlined,
+                              message: 'No survey responses match this view',
+                              detail: 'Responses appear here as attendees complete the built-in feedback survey.',
+                            )
+                          : Builder(builder: (context) {
+                              // The backend keeps every submission, so the same
+                              // person can appear more than once; count them so
+                              // repeats are visibly flagged instead of looking
+                              // like accidental duplicates.
+                              final submissionCounts = <String, int>{};
+                              for (final response in responses!) {
+                                final key = _personEventKey(response);
+                                submissionCounts[key] = (submissionCounts[key] ?? 0) + 1;
+                              }
+                              return ListView.separated(
+                                padding: const EdgeInsets.all(8),
+                                itemCount: responses!.length,
+                                separatorBuilder: (_, __) => divider,
+                                itemBuilder: (context, index) => _ResponseTile(
+                                  response: responses![index],
+                                  submissionCount: submissionCounts[_personEventKey(responses![index])] ?? 1,
+                                ),
+                              );
+                            }),
                 ),
               ),
             ],
@@ -148,21 +166,37 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
   }
 }
 
+/// Identity of a submitter within one event, for spotting repeat submissions.
+String _personEventKey(Map<String, dynamic> response) =>
+    '${(response['email'] ?? response['full_name'] ?? '').toString().trim().toLowerCase()}'
+    '|${response['event_id'] ?? response['event_title']}';
+
 class _ResponseTile extends StatelessWidget {
-  const _ResponseTile({required this.response});
+  const _ResponseTile({required this.response, this.submissionCount = 1});
   final Map<String, dynamic> response;
+
+  /// How many submissions this person has for this event (1 = no repeats).
+  final int submissionCount;
 
   @override
   Widget build(BuildContext context) {
     final answers = (response['answers'] as Map?)?.cast<String, dynamic>() ?? {};
-    final completed = DateTime.tryParse(response['completed_at']?.toString() ?? '');
+    final completed = DateTime.tryParse(response['completed_at']?.toString() ?? '')?.toLocal();
     return ExpansionTile(
       shape: const Border(),
       collapsedShape: const Border(),
-      title: Text(response['full_name'] as String, style: const TextStyle(fontWeight: FontWeight.w600)),
+      title: Row(
+        children: [
+          Flexible(child: Text(response['full_name'] as String, style: const TextStyle(fontWeight: FontWeight.w600))),
+          if (submissionCount > 1) ...[
+            const SizedBox(width: 8),
+            StatusBadge('$submissionCount SUBMISSIONS', tone: BadgeTone.warning),
+          ],
+        ],
+      ),
       subtitle: Text(
         '${response['event_title']}  ·  ${response['email'] ?? 'no email'}'
-        '${completed == null ? '' : '  ·  ${DateFormat.yMMMd().format(completed.toLocal())}'}',
+        '${completed == null ? '' : '  ·  ${DateFormat.yMMMd().format(completed)} · ${DateFormat.jm().format(completed)}'}',
         style: const TextStyle(fontSize: 12, color: Color(0xFF667085)),
       ),
       childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 14),

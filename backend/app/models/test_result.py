@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, Numeric
+from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -17,4 +17,7 @@ class TestResult(Base):
     passed: Mapped[bool] = mapped_column(Boolean)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    # "web" rows come from the public test page and survive file re-imports;
+    # "upload" rows are replaced whenever a post-test file is uploaded again.
+    source: Mapped[str] = mapped_column(String(10), default="upload", server_default="upload")
 

@@ -123,6 +123,36 @@ class StatCard extends StatelessWidget {
   }
 }
 
+/// Consistent placeholder for lists and tables that have nothing to show yet.
+class EmptyState extends StatelessWidget {
+  const EmptyState({super.key, required this.icon, required this.message, this.detail});
+
+  final IconData icon;
+  final String message;
+  final String? detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 40, color: const Color(0xFF98A2B3)),
+            const SizedBox(height: 12),
+            Text(message, textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600)),
+            if (detail != null) ...[
+              const SizedBox(height: 6),
+              Text(detail!, textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: Color(0xFF667085))),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class LoadingPanel extends StatelessWidget {
   const LoadingPanel({super.key});
 
@@ -173,6 +203,22 @@ Widget checkIcon(bool value) => Icon(
       color: value ? const Color(0xFF248A52) : const Color(0xFFB42318),
       size: 20,
     );
+
+/// Validator for a required email field.
+String? emailValidator(String? value) {
+  final text = value?.trim() ?? '';
+  if (text.isEmpty) return 'Enter an email address';
+  return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(text) ? null : 'Enter a valid email address';
+}
+
+/// Validator for an optional http(s) URL field (valid when left blank).
+String? optionalUrlValidator(String? value) {
+  final text = value?.trim() ?? '';
+  if (text.isEmpty) return null;
+  final uri = Uri.tryParse(text);
+  final valid = uri != null && (uri.isScheme('http') || uri.isScheme('https')) && uri.host.isNotEmpty;
+  return valid ? null : 'Enter a full link starting with http:// or https://';
+}
 
 const maxContentWidth = 1480.0;
 const pagePadding = EdgeInsets.all(24);

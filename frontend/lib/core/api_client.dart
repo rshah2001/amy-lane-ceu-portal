@@ -46,6 +46,16 @@ class ApiClient {
     );
   }
 
+  Future<dynamic> put(String path, [Map<String, dynamic>? body]) async {
+    return _decode(
+      await http.put(
+        Uri.parse('$baseUrl$path'),
+        headers: _headers,
+        body: jsonEncode(body ?? <String, dynamic>{}),
+      ),
+    );
+  }
+
   Future<dynamic> patch(String path, [Map<String, dynamic>? body]) async {
     return _decode(
       await http.patch(

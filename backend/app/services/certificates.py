@@ -1,4 +1,5 @@
 import io
+import logging
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
@@ -7,10 +8,13 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.lib.colors import HexColor
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen.canvas import Canvas
 
 from app.core.config import settings
 from app.models.event_attendee import EventAttendee
+
+logger = logging.getLogger("app.certificates")
 
 # Field placement tuned for the CAMS / NMEDA lunch & learn template (612x792 pt).
 # Coordinates are PDF points from the bottom-left. Override per event via
@@ -58,6 +62,18 @@ def certificate_snapshot(link: EventAttendee) -> dict:
     }
 
 
+def _fitted_size(text: str, font: str, size: float, max_width: float) -> float:
+    """Shrink a font size until the text fits, so long values (e.g. multiple
+    presenter names on the instructor line) are never clipped off the page."""
+    try:
+        text_width = stringWidth(text, font, size)
+    except KeyError:
+        text_width = stringWidth(text, "Helvetica", size)
+    if text_width <= max_width or text_width <= 0:
+        return size
+    return max(7.0, size * max_width / text_width)
+
+
 def _watermark(canvas: Canvas, width: float, height: float) -> None:
     canvas.saveState()
     canvas.setFillColor(HexColor("#B42318"))
@@ -80,11 +96,37 @@ def _draw_fields(
         if not text:
             continue
         spec = {**DEFAULT_CERTIFICATE_FIELDS.get(key, {}), **(layout.get(key, {}) if layout else {})}
-        canvas.setFont(spec.get("font", "Helvetica"), spec.get("size", 14))
-        canvas.setFillColor(HexColor(spec.get("color", "#1b3a5b")))
+        # Per-event layout overrides are admin-entered JSON: fall back to safe
+        # defaults on an unknown font or malformed color instead of failing the
+        # whole certificate.
+        font = spec.get("font", "Helvetica")
+        size = spec.get("size", 14) or 14
+        try:
+            canvas.setFont(font, size)
+        except (KeyError, ValueError, TypeError):
+            logger.warning("Unknown certificate font %r for field %s; using Helvetica", spec.get("font"), key)
+            font = "Helvetica"
+            canvas.setFont(font, size)
+        try:
+            canvas.setFillColor(HexColor(spec.get("color", "#1b3a5b")))
+        except (ValueError, TypeError):
+            logger.warning("Invalid certificate color %r for field %s; using default", spec.get("color"), key)
+            canvas.setFillColor(HexColor("#1b3a5b"))
         x = spec.get("x", width / 2)
         y = spec.get("y", height / 2)
         align = spec.get("align", "center")
+        # Shrink long values (e.g. "Jane Doe & John Smith" on the instructor
+        # line) so they stay inside the page instead of being clipped.
+        margin = 24
+        if align == "center":
+            available = 2 * min(x, width - x) - margin
+        elif align == "right":
+            available = x - margin
+        else:
+            available = width - x - margin
+        fitted = _fitted_size(text, font, size, max(40.0, available))
+        if fitted != size:
+            canvas.setFont(font, fitted)
         if align == "center":
             canvas.drawCentredString(x, y, text)
         elif align == "right":
@@ -100,10 +142,20 @@ def _overlay_on_pdf(
     output_path: Path,
     preview: bool,
 ) -> Path:
-    reader = PdfReader(template_path)
-    page = reader.pages[0]
-    width = float(page.mediabox.width)
-    height = float(page.mediabox.height)
+    try:
+        reader = PdfReader(template_path)
+        if reader.is_encrypted:
+            reader.decrypt("")
+        if not reader.pages:
+            raise ValueError("template has no pages")
+        page = reader.pages[0]
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Certificate PDF template could not be read ({template_path}): {exc}. "
+            "Re-upload the template for this event."
+        ) from exc
 
     buffer = io.BytesIO()
     canvas = Canvas(buffer, pagesize=(width, height))
@@ -133,9 +185,15 @@ def _legacy_certificate(
     width, height = landscape(letter)
     template_path = link.event.certificate_template_path
     if template_path and Path(template_path).exists():
-        canvas.drawImage(
-            ImageReader(template_path), 0, 0, width=width, height=height, preserveAspectRatio=False, mask="auto"
-        )
+        try:
+            canvas.drawImage(
+                ImageReader(template_path), 0, 0, width=width, height=height, preserveAspectRatio=False, mask="auto"
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Certificate template image could not be read ({template_path}): {exc}. "
+                "Re-upload the template for this event."
+            ) from exc
     else:
         canvas.setFillColor(HexColor("#17324d"))
         canvas.rect(0, 0, width, height, fill=1, stroke=0)
@@ -150,17 +208,19 @@ def _legacy_certificate(
     canvas.drawCentredString(width / 2, height - 125, link.event.certificate_title.upper())
     canvas.setFont("Helvetica", 13)
     canvas.drawCentredString(width / 2, height - 165, "This certifies that")
-    canvas.setFont("Helvetica-Bold", 27)
+    max_text_width = width - 120
+    canvas.setFont("Helvetica-Bold", _fitted_size(values["attendee_name"], "Helvetica-Bold", 27, max_text_width))
     canvas.drawCentredString(width / 2, height - 215, values["attendee_name"])
     canvas.setFont("Helvetica", 13)
     canvas.drawCentredString(width / 2, height - 255, "successfully completed")
-    canvas.setFont("Helvetica-Bold", 19)
+    canvas.setFont("Helvetica-Bold", _fitted_size(link.event.title, "Helvetica-Bold", 19, max_text_width))
     canvas.drawCentredString(width / 2, height - 292, link.event.title)
     canvas.setFont("Helvetica", 12)
     canvas.drawCentredString(width / 2, height - 328, f"{values['training_date']}  |  {link.event.ceu_hours} CEU hours")
     canvas.line(width / 2 - 130, 135, width / 2 + 130, 135)
-    canvas.setFont("Helvetica", 11)
-    canvas.drawCentredString(width / 2, 116, values["course_instructor"] or settings.certificate_issuer_name)
+    instructor_line = values["course_instructor"] or settings.certificate_issuer_name
+    canvas.setFont("Helvetica", _fitted_size(instructor_line, "Helvetica", 11, max_text_width))
+    canvas.drawCentredString(width / 2, 116, instructor_line)
     canvas.setFont("Helvetica", 9)
     canvas.drawString(58, 62, f"Certificate no. {certificate_number}")
     if preview:
@@ -176,6 +236,7 @@ def generate_certificate_pdf(
     preview: bool = False,
 ) -> Path:
     output = output_path or settings.certificates_dir / f"{certificate_number}.pdf"
+    output.parent.mkdir(parents=True, exist_ok=True)
     values = _field_values(link)
     layout = link.event.certificate_fields or {}
     template_path = link.event.certificate_template_path

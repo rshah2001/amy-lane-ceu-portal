@@ -79,6 +79,7 @@ def submit_public_test(
     if not result:
         result = TestResult(event_id=event.id, attendee_id=attendee.id)
         db.add(result)
+    result.source = "web"
     result.score = score
     result.passed = passed
     result.completed_at = datetime.now(timezone.utc)

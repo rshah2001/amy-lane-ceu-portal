@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/session.dart';
 import '../core/theme.dart';
+import '../widgets/common.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key, required this.session});
@@ -12,18 +13,33 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
+  final formKey = GlobalKey<FormState>();
   final email = TextEditingController();
   final password = TextEditingController();
   bool obscure = true;
 
   @override
+  void initState() {
+    super.initState();
+    // Rebuild for loading/error changes triggered by the session controller.
+    widget.session.addListener(_onSessionChanged);
+  }
+
+  void _onSessionChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   void dispose() {
+    widget.session.removeListener(_onSessionChanged);
     email.dispose();
     password.dispose();
     super.dispose();
   }
 
   Future<void> submit() async {
+    if (widget.session.loading) return;
+    if (!formKey.currentState!.validate()) return;
     await widget.session.login(email.text, password.text);
   }
 
@@ -69,45 +85,56 @@ class _LoginPageState extends State<LoginPage> {
                 padding: const EdgeInsets.all(28),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 430),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Text('Sign in', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: navy)),
-                      const SizedBox(height: 8),
-                      Text('Access your compliance workspace.', style: TextStyle(color: Colors.blueGrey.shade600)),
-                      const SizedBox(height: 30),
-                      TextField(
-                        controller: email,
-                        keyboardType: TextInputType.emailAddress,
-                        decoration: const InputDecoration(labelText: 'Email address', prefixIcon: Icon(Icons.mail_outline)),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: password,
-                        obscureText: obscure,
-                        onSubmitted: (_) => submit(),
-                        decoration: InputDecoration(
-                          labelText: 'Password',
-                          prefixIcon: const Icon(Icons.lock_outline),
-                          suffixIcon: IconButton(
-                            tooltip: obscure ? 'Show password' : 'Hide password',
-                            onPressed: () => setState(() => obscure = !obscure),
-                            icon: Icon(obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                  child: Form(
+                    key: formKey,
+                    child: AutofillGroup(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text('Sign in', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: navy)),
+                          const SizedBox(height: 8),
+                          Text('Access your compliance workspace.', style: TextStyle(color: Colors.blueGrey.shade600)),
+                          const SizedBox(height: 30),
+                          TextFormField(
+                            controller: email,
+                            keyboardType: TextInputType.emailAddress,
+                            textInputAction: TextInputAction.next,
+                            autofillHints: const [AutofillHints.username],
+                            decoration: const InputDecoration(labelText: 'Email address', prefixIcon: Icon(Icons.mail_outline)),
+                            validator: emailValidator,
                           ),
-                        ),
+                          const SizedBox(height: 16),
+                          TextFormField(
+                            controller: password,
+                            obscureText: obscure,
+                            textInputAction: TextInputAction.done,
+                            autofillHints: const [AutofillHints.password],
+                            onFieldSubmitted: (_) => submit(),
+                            decoration: InputDecoration(
+                              labelText: 'Password',
+                              prefixIcon: const Icon(Icons.lock_outline),
+                              suffixIcon: IconButton(
+                                tooltip: obscure ? 'Show password' : 'Hide password',
+                                onPressed: () => setState(() => obscure = !obscure),
+                                icon: Icon(obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                              ),
+                            ),
+                            validator: (value) => value == null || value.isEmpty ? 'Enter your password' : null,
+                          ),
+                          if (widget.session.error != null) ...[
+                            const SizedBox(height: 14),
+                            Text(widget.session.error!, style: const TextStyle(color: Color(0xFFB42318))),
+                          ],
+                          const SizedBox(height: 22),
+                          ElevatedButton(
+                            onPressed: widget.session.loading ? null : submit,
+                            child: widget.session.loading
+                                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                : const Text('Sign in'),
+                          ),
+                        ],
                       ),
-                      if (widget.session.error != null) ...[
-                        const SizedBox(height: 14),
-                        Text(widget.session.error!, style: const TextStyle(color: Color(0xFFB42318))),
-                      ],
-                      const SizedBox(height: 22),
-                      ElevatedButton(
-                        onPressed: widget.session.loading ? null : submit,
-                        child: widget.session.loading
-                            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                            : const Text('Sign in'),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ),

@@ -129,7 +129,7 @@ class _PublicTestPageState extends State<PublicTestPage> {
                 controller: email,
                 keyboardType: TextInputType.emailAddress,
                 decoration: const InputDecoration(labelText: 'Email address'),
-                validator: (value) => value == null || !value.contains('@') ? 'Enter a valid email' : null,
+                validator: emailValidator,
               ),
               for (var i = 0; i < questions.length; i++) ...[
                 const SizedBox(height: 22),

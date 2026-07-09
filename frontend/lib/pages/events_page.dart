@@ -80,7 +80,13 @@ class _EventsPageState extends State<EventsPage> {
                       : events == null
                           ? const LoadingPanel()
                           : events!.isEmpty
-                              ? const Center(child: Text('No events match this search.'))
+                              ? EmptyState(
+                                  icon: Icons.event_note_outlined,
+                                  message: search.text.trim().isEmpty ? 'No events yet' : 'No events match this search',
+                                  detail: search.text.trim().isEmpty
+                                      ? 'Create the first training event to get started.'
+                                      : 'Try a different search term.',
+                                )
                               : SingleChildScrollView(
                                   child: SingleChildScrollView(
                                     scrollDirection: Axis.horizontal,

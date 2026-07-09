@@ -4,11 +4,13 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_SECRET_KEY = "change-this-secret-in-production"
+
 
 class Settings(BaseSettings):
     app_name: str = "CEU Compliance & Certificate Automation Portal"
     environment: str = "development"
-    secret_key: str = "change-this-secret-in-production"
+    secret_key: str = DEFAULT_SECRET_KEY
     access_token_expire_minutes: int = 480
     database_url: str = "postgresql+psycopg://ceu_user:ceu_password@localhost:5432/ceu_compliance"
     # Plain string so pydantic-settings never tries to JSON-decode it from the
@@ -22,6 +24,9 @@ class Settings(BaseSettings):
     smtp_username: str | None = None
     smtp_password: str | None = None
     smtp_from: str = "certificates@example.com"
+    # Optional contact address shown in the do-not-reply footer of every
+    # outgoing email ("Questions? Contact ...").
+    reply_contact_email: str | None = None
     retention_years: int = 7
     public_frontend_url: str = "http://127.0.0.1:8080"
     survey_ai_enabled: bool = False
@@ -51,6 +56,11 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
+    if settings.environment == "production" and settings.secret_key in ("", DEFAULT_SECRET_KEY):
+        raise RuntimeError(
+            "SECRET_KEY is unset or still the development placeholder. "
+            "Set a strong, unique SECRET_KEY environment variable before running in production."
+        )
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
     settings.certificates_dir.mkdir(parents=True, exist_ok=True)
     return settings

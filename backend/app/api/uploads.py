@@ -1,7 +1,9 @@
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,7 +20,39 @@ from app.services.notifications import notify_admins
 
 router = APIRouter(prefix="/events/{event_id}/uploads", tags=["Uploads"])
 FILE_TYPES = {"registration", "attendance", "post_test", "survey"}
-ALLOWED_SUFFIXES = {".csv", ".xlsx", ".png", ".jpg", ".jpeg"}
+ALLOWED_SUFFIXES = {".csv", ".xlsx", ".png", ".jpg", ".jpeg", ".pdf", ".docx"}
+ALLOWED_FORMATS_LABEL = "CSV, XLSX, PDF, DOCX, PNG, JPG, or JPEG"
+MEDIA_TYPES = {
+    ".csv": "text/csv",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+
+def _content_matches_suffix(suffix: str, contents: bytes) -> bool:
+    """Verify the file's magic bytes match its claimed extension."""
+    if suffix == ".png":
+        return contents.startswith(b"\x89PNG\r\n\x1a\n")
+    if suffix in {".jpg", ".jpeg"}:
+        return contents.startswith(b"\xff\xd8\xff")
+    if suffix == ".pdf":
+        return contents.startswith(b"%PDF")
+    if suffix in {".xlsx", ".docx"}:
+        # XLSX and DOCX files are ZIP archives.
+        return contents.startswith(b"PK\x03\x04")
+    if suffix == ".csv":
+        if b"\x00" in contents:
+            return False
+        try:
+            contents.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return False
+        return True
+    return False
 
 
 @router.get("", response_model=list[UploadedFileOut])
@@ -34,6 +68,36 @@ def list_uploads(
             .where(UploadedFile.event_id == event_id)
             .order_by(UploadedFile.uploaded_at.desc())
         )
+    )
+
+
+@router.get("/{upload_id}/download")
+def download_upload(
+    event_id: int,
+    upload_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> FileResponse:
+    """Stream back the original uploaded document (same visibility as listing)."""
+    get_visible_event(db, event_id, current_user)
+    upload = db.scalar(
+        select(UploadedFile).where(
+            UploadedFile.id == upload_id,
+            UploadedFile.event_id == event_id,
+        )
+    )
+    if not upload or not Path(upload.storage_path).is_file():
+        raise HTTPException(status_code=404, detail="Uploaded file not found")
+    suffix = Path(upload.original_filename).suffix.lower()
+    fallback = Path(upload.original_filename).name.encode("ascii", "replace").decode("ascii").replace('"', "'")
+    disposition = (
+        f'attachment; filename="{fallback}"; '
+        f"filename*=UTF-8''{quote(Path(upload.original_filename).name)}"
+    )
+    return FileResponse(
+        upload.storage_path,
+        media_type=MEDIA_TYPES.get(suffix, "application/octet-stream"),
+        headers={"Content-Disposition": disposition},
     )
 
 
@@ -53,11 +117,17 @@ async def upload_document(
             status_code=403,
             detail="Presenters can only upload the attendance / sign-in sheet",
         )
-    if not file.filename or Path(file.filename).suffix.lower() not in ALLOWED_SUFFIXES:
-        raise HTTPException(status_code=400, detail="Upload a CSV, XLSX, PNG, JPG, or JPEG file")
+    suffix = Path(file.filename).suffix.lower() if file.filename else ""
+    if not file.filename or suffix not in ALLOWED_SUFFIXES:
+        raise HTTPException(status_code=400, detail=f"Upload a {ALLOWED_FORMATS_LABEL} file")
     contents = await file.read()
     if len(contents) > 15 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Upload exceeds the 15 MB limit")
+    if not contents or not _content_matches_suffix(suffix, contents):
+        raise HTTPException(
+            status_code=400,
+            detail=f"File content does not match its extension; upload a valid {ALLOWED_FORMATS_LABEL} file",
+        )
 
     destination = settings.uploads_dir / str(event_id) / f"{uuid4().hex}-{Path(file.filename).name}"
     save_upload(contents, destination)

@@ -26,8 +26,9 @@ services:
         sync: false
       - key: EMAIL_DELIVERY_MODE
         value: smtp
+      # Resend SMTP relay (username is literally "resend"; password is the re_... API key).
       - key: SMTP_HOST
-        value: smtp.gmail.com
+        value: smtp.resend.com
       - key: SMTP_PORT
         value: "587"
       - key: SMTP_USERNAME
@@ -35,6 +36,9 @@ services:
       - key: SMTP_PASSWORD
         sync: false
       - key: SMTP_FROM
+        sync: false
+      # Shown in the do-not-reply footer of outgoing mail, e.g. amy.otley@nmeda.org
+      - key: REPLY_CONTACT_EMAIL
         sync: false
       - key: RETENTION_YEARS
         value: "7"

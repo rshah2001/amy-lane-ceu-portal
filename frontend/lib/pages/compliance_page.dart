@@ -167,7 +167,11 @@ class _CompliancePageState extends State<CompliancePage> {
                   child: records == null
                       ? const LoadingPanel()
                       : records!.isEmpty
-                          ? const Center(child: Text('No attendee records match this view.'))
+                          ? const EmptyState(
+                              icon: Icons.fact_check_outlined,
+                              message: 'No attendee records match this view',
+                              detail: 'Upload the registration and attendance files, or adjust the search and eligibility filters.',
+                            )
                           : SingleChildScrollView(
                               child: SingleChildScrollView(
                                 scrollDirection: Axis.horizontal,

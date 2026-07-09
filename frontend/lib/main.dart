@@ -100,7 +100,8 @@ GoRouter buildRouter(SessionController session) {
       }
       // Admin-only sections: keep presenters out even via a typed/shared URL.
       const adminOnly = ['/create', '/certificates', '/reports', '/users', '/survey-responses', '/notifications', '/system'];
-      if (!session.user!.isAdmin && adminOnly.any((p) => state.matchedLocation.startsWith(p))) {
+      if (!session.user!.isAdmin &&
+          (adminOnly.any((p) => state.matchedLocation.startsWith(p)) || state.matchedLocation.endsWith('/edit'))) {
         return '/dashboard';
       }
       return null;
@@ -149,6 +150,10 @@ GoRouter buildRouter(SessionController session) {
                     canManageCertificates: session.user!.isAdmin,
                     onNavigate: (target) {
                       switch (target) {
+                        case 'edit':
+                          // No extra: the edit screen refetches the event so it
+                          // always has the latest test and survey questions.
+                          context.go('/events/${event.id}/edit');
                         case 'uploads':
                           context.go('/events/${event.id}/uploads', extra: event);
                         case 'compliance':
@@ -162,6 +167,18 @@ GoRouter buildRouter(SessionController session) {
                   ),
                 ),
                 routes: [
+                  GoRoute(
+                    path: 'edit',
+                    builder: (context, state) => _eventScreen(
+                      session,
+                      state,
+                      (context, event) => CreateEventPage(
+                        session: session,
+                        event: event,
+                        onSaved: (updated) => context.go('/events/${updated.id}', extra: updated),
+                      ),
+                    ),
+                  ),
                   GoRoute(
                     path: 'uploads',
                     builder: (context, state) => _eventScreen(
@@ -186,7 +203,7 @@ GoRouter buildRouter(SessionController session) {
             path: '/create',
             builder: (context, state) => CreateEventPage(
               session: session,
-              onCreated: (event) => context.go('/events/${event.id}', extra: event),
+              onSaved: (event) => context.go('/events/${event.id}', extra: event),
             ),
           ),
           GoRoute(

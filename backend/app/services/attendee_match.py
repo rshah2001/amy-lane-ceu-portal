@@ -14,6 +14,10 @@ from app.services.identity import normalize_email, normalize_name, split_name
 
 
 def match_or_create_attendee(db: Session, full_name: str, email: str | None) -> Attendee:
+    # Public form input arrives untrimmed; collapse stray whitespace before it
+    # is stored so display names and matching keys stay clean.
+    full_name = " ".join((full_name or "").split())
+    email = email.strip() if email and email.strip() else None
     norm_email = normalize_email(email)
     norm_name = normalize_name(full_name)
     clauses = []

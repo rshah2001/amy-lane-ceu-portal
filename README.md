@@ -1,6 +1,17 @@
 # CEU Compliance & Certificate Automation Portal
 
+<!-- Replace OWNER/REPO with the GitHub path once the repo is pushed. -->
+[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+
 A working multi-format CEU compliance portal with a Flutter Web enterprise dashboard and FastAPI/PostgreSQL backend.
+
+## Architecture
+
+- **Backend** — FastAPI + SQLAlchemy served by Uvicorn (`backend/`), with Alembic migrations and a seed script that create the schema and starter accounts on boot. Uploads (CSV/XLSX/PNG/JPG) are normalized by the import pipeline; image files go through local Tesseract OCR.
+- **Database** — PostgreSQL is the system of record (attendees, events, eligibility decisions, certificate metadata, email attempts, audit log). Tests run against in-memory SQLite so they need no running database.
+- **Frontend** — Flutter web app (`frontend/`), compiled to a static bundle and served by nginx (Docker), `python -m http.server` (`start.sh`), or Vercel (see `DEPLOYMENT.md`). It talks to the API via the compile-time `API_BASE_URL` dart-define.
+- **Storage layout** — retained file bytes live under `backend/storage/`: `uploads/` (original source files) and `certificates/` (generated PDFs). In Docker this is the `retained_files` volume mounted at `/app/storage`; set `STORAGE_DIR` to relocate it.
+- **CI** — GitHub Actions (`.github/workflows/ci.yml`) runs backend pytest and Flutter analyze/test on every push and pull request.
 
 ## Included Workflow
 
@@ -86,6 +97,14 @@ Upload the four files in `sample_data/` to the seeded event in this order:
 The sample intentionally includes an eligible attendee, a failing score, missing survey completion, missing attendance, and an invalid email.
 
 Image uploads use local Tesseract OCR and work best with clean printed tables or comma-separated screenshots. CSV/XLSX remains the most reliable source format.
+
+## Troubleshooting
+
+- **PostgreSQL is not running / connection refused** — `start.sh` checks with `pg_isready` and exits early. Start Postgres (e.g. `brew services start postgresql@16`) and confirm the `DATABASE_URL` in `backend/.env` matches your local database, user, and password. With Docker Compose the `db` service is started for you.
+- **Image uploads fail (Tesseract missing)** — PNG/JPG parsing needs the Tesseract binary on the backend machine: `brew install tesseract` (macOS) or `apt-get install tesseract-ocr` (Debian/Ubuntu). The Docker image installs it already. CSV/XLSX uploads work without it.
+- **Browser console shows CORS errors** — the origin serving the web app must be listed in `BACKEND_CORS_ORIGINS` (comma-separated, exact scheme + host + port, e.g. `http://127.0.0.1:8090`). Note `localhost` and `127.0.0.1` are different origins. Restart the API after changing it.
+- **Frontend loads but every request fails** — the API base URL is baked in at build time via `--dart-define=API_BASE_URL=...`; rebuild the web bundle if the backend address changed (delete `frontend/build/web` so `start.sh` rebuilds).
+- **Stale backend dependencies or frontend build** — `start.sh` reuses `backend/.venv` and `frontend/build/web` when they exist; delete either directory to force a rebuild.
 
 ## Production Notes
 

@@ -214,7 +214,13 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                 child: Card(
                   child: logs == null
                       ? const LoadingPanel()
-                      : SingleChildScrollView(
+                      : logs!.isEmpty
+                          ? const EmptyState(
+                              icon: Icons.assessment_outlined,
+                              message: 'No audit log entries yet',
+                              detail: 'Material actions such as uploads, approvals, and certificate sends are recorded here.',
+                            )
+                          : SingleChildScrollView(
                           child: SingleChildScrollView(
                             scrollDirection: Axis.horizontal,
                             child: DataTable(

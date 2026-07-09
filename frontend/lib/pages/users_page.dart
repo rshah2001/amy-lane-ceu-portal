@@ -222,8 +222,7 @@ class _AddUserDialogState extends State<_AddUserDialog> {
                 controller: email,
                 keyboardType: TextInputType.emailAddress,
                 decoration: const InputDecoration(labelText: 'Email'),
-                validator: (value) =>
-                    value == null || !value.contains('@') ? 'Enter a valid email' : null,
+                validator: emailValidator,
               ),
               const SizedBox(height: 14),
               DropdownButtonFormField<String>(

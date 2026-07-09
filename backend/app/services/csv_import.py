@@ -1,5 +1,7 @@
 import csv
 import io
+import xml.etree.ElementTree as ElementTree
+import zipfile
 from zipfile import BadZipFile
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -9,6 +11,7 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from PIL import Image, ImageOps
+from pypdf import PdfReader
 import pytesseract
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
@@ -50,7 +53,7 @@ def _identity(row: dict[str, str]) -> dict[str, str | None]:
     last = _value(row, "last_name")
     full = _value(row, "full_name") or " ".join(value for value in [first, last] if value)
     if not full:
-        raise ValueError("A name is required")
+        raise ValueError('A name is required (expected a "Name" or "First/Last Name" column)')
     full = humanize_name(full)
     split_first, split_last = split_name(full)
     return {
@@ -110,13 +113,13 @@ def _get_or_create_link(db: Session, event_id: int, attendee: Attendee) -> Event
 
 def _parse_score(value: str | None) -> Decimal:
     if value is None:
-        raise ValueError("A post-test score is required")
+        raise ValueError('A post-test score is required (expected a "Score" column)')
     try:
         score = Decimal(value.replace("%", "").strip())
     except InvalidOperation as exc:
-        raise ValueError(f"Invalid score: {value}") from exc
+        raise ValueError(f"Invalid score: {value!r} (expected a number between 0 and 100)") from exc
     if score < 0 or score > 100:
-        raise ValueError("Post-test score must be between 0 and 100")
+        raise ValueError(f"Post-test score must be between 0 and 100, got {score}")
     return score
 
 
@@ -135,9 +138,43 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return None
 
 
+def _decode_csv(contents: bytes) -> str:
+    """Decode CSV bytes, handling UTF-8/UTF-16 BOMs and legacy Excel encodings."""
+    if contents.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return contents.decode("utf-16")
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return contents.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("The file is not text in a supported encoding (UTF-8 or Windows-1252)")
+
+
+def _dedupe_headers(fieldnames: list[str]) -> list[str]:
+    """Rename repeated header names so duplicate columns cannot clobber each other.
+
+    csv.DictReader keeps only the last column for a repeated header; renaming
+    later duplicates ("Email" -> "Email (2)") preserves the first column, which
+    is the one the alias lookup should use.
+    """
+    seen: dict[str, int] = {}
+    unique: list[str] = []
+    for name in fieldnames:
+        name = (name or "").strip()
+        canonical = _canonical_header(name)
+        count = seen.get(canonical, 0)
+        seen[canonical] = count + 1
+        unique.append(f"{name} ({count + 1})" if name and count else name)
+    return unique
+
+
 def parse_csv_bytes(contents: bytes) -> list[dict[str, str]]:
-    text = contents.decode("utf-8-sig")
-    return list(csv.DictReader(io.StringIO(text)))
+    text = _decode_csv(contents)
+    reader = csv.DictReader(io.StringIO(text))
+    if reader.fieldnames is None:
+        raise ValueError("The file is empty")
+    reader.fieldnames = _dedupe_headers(list(reader.fieldnames))
+    return list(reader)
 
 
 def _detect_header(rows: list[tuple]) -> int | None:
@@ -190,7 +227,11 @@ def parse_xlsx_bytes(contents: bytes) -> list[dict[str, str]]:
         )
         if best is None or score > best[0]:
             best = (score, records)
-    return best[1] if best else []
+    if best is None:
+        raise ValueError(
+            "no attendee table found (expected a sheet with a header row naming a name or email column)"
+        )
+    return best[1]
 
 
 def _split_ocr_line(line: str) -> list[str]:
@@ -244,7 +285,8 @@ def _parse_ocr_text(text: str) -> tuple[list[dict[str, str]], list[dict[str, Any
     return records, errors
 
 
-def parse_image_bytes(contents: bytes) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+def _ocr_text_from_image(contents: bytes) -> str:
+    """OCR raw image bytes into text. Shared by image uploads and scanned PDFs."""
     try:
         image = Image.open(io.BytesIO(contents))
         image = ImageOps.autocontrast(ImageOps.grayscale(image))
@@ -254,10 +296,134 @@ def parse_image_bytes(contents: bytes) -> tuple[list[dict[str, str]], list[dict[
                 (1400, max(1, round(image.height * scale))),
                 Image.Resampling.LANCZOS,
             )
-        text = pytesseract.image_to_string(image, config="--psm 6")
+        return pytesseract.image_to_string(image, config="--psm 6")
     except (OSError, pytesseract.TesseractError) as exc:
         raise ValueError(f"Image OCR failed: {exc}") from exc
-    return _parse_ocr_text(text)
+
+
+def parse_image_bytes(contents: bytes) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    return _parse_ocr_text(_ocr_text_from_image(contents))
+
+
+def parse_pdf_bytes(contents: bytes) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    """Extract attendee rows from a PDF sign-in sheet.
+
+    Pages with a text layer go through the shared line parser; pages that are
+    embedded scans (scan-to-PDF, the common case for sign-in sheets) fall back
+    to OCR on each embedded image.
+    """
+    try:
+        reader = PdfReader(io.BytesIO(contents))
+        if reader.is_encrypted:
+            reader.decrypt("")
+        pages = list(reader.pages)
+    except Exception as exc:  # pypdf raises many exception types on bad input
+        raise ValueError(f"Invalid PDF file: {exc}") from exc
+
+    records: list[dict[str, str]] = []
+    warnings: list[dict[str, Any]] = [
+        {
+            "row": 0,
+            "message": (
+                "PDF text/OCR extraction is best-effort; a CSV or XLSX export is more "
+                "reliable. Review extracted rows before approving certificates."
+            ),
+        }
+    ]
+    seen_messages = {warnings[0]["message"]}
+
+    def _merge(new_records: list[dict[str, str]], new_warnings: list[dict[str, Any]]) -> None:
+        records.extend(new_records)
+        for warning in new_warnings:
+            if warning.get("message") not in seen_messages:
+                seen_messages.add(warning.get("message"))
+                warnings.append(warning)
+
+    for page_number, page in enumerate(pages, start=1):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        if text.strip():
+            _merge(*_parse_ocr_text(text))
+            continue
+        # No text layer: OCR any embedded page images (scan-to-PDF case).
+        try:
+            images = list(page.images)
+        except Exception:
+            images = []
+        if not images:
+            _merge([], [{"row": 0, "message": f"PDF page {page_number} has no extractable text or images."}])
+            continue
+        for image in images:
+            try:
+                _merge(*_parse_ocr_text(_ocr_text_from_image(image.data)))
+            except ValueError as exc:
+                _merge([], [{"row": 0, "message": f"PDF page {page_number}: {exc}"}])
+    if not records:
+        raise ValueError(
+            "no attendee rows could be extracted from the PDF (a CSV or XLSX export is more reliable)"
+        )
+    return records, warnings
+
+
+_DOCX_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _docx_text(element) -> str:
+    return "".join(node.text or "" for node in element.iter(f"{_DOCX_W}t")).strip()
+
+
+def parse_docx_bytes(contents: bytes) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    """Extract attendee rows from a Word (.docx) sign-in sheet.
+
+    Most sign-in sheets are tables: read w:tbl/w:tr/w:tc from word/document.xml
+    (stdlib zipfile + ElementTree; no python-docx needed) with the first
+    header-looking row as column names. Documents without a usable table fall
+    back to paragraph text lines through the shared line parser.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents)) as archive:
+            document = archive.read("word/document.xml")
+        root = ElementTree.fromstring(document)
+    except (BadZipFile, KeyError, ElementTree.ParseError, OSError) as exc:
+        raise ValueError(f"Invalid DOCX file: {exc}") from exc
+
+    best: tuple[tuple[int, int, int], list[dict[str, str]]] | None = None
+    for table in root.iter(f"{_DOCX_W}tbl"):
+        rows = [
+            tuple(_docx_text(cell) for cell in row.findall(f"{_DOCX_W}tc"))
+            for row in table.findall(f"{_DOCX_W}tr")
+        ]
+        if len(rows) < 2:
+            continue
+        # First row is normally the header; _detect_header also skips any
+        # leading title rows, matching the XLSX behavior.
+        header_index = _detect_header(rows)
+        if header_index is None:
+            header_index = 0
+        records = _records_from_rows(rows, header_index)
+        if not records:
+            continue
+        canonical = [_canonical_header(str(cell)) for cell in rows[header_index] if cell]
+        score = (
+            sum("email" in cell for cell in canonical),
+            sum("name" in cell for cell in canonical),
+            len(records),
+        )
+        if best is None or score > best[0]:
+            best = (score, records)
+    if best is not None:
+        return best[1], []
+
+    # No table: treat paragraph lines like OCR/plain text.
+    lines = [_docx_text(paragraph) for paragraph in root.iter(f"{_DOCX_W}p")]
+    records, warnings = _parse_ocr_text("\n".join(line for line in lines if line))
+    if not records:
+        raise ValueError(
+            "no attendee rows found in the DOCX (expected a table with a name or email column)"
+        )
+    return records, warnings
 
 
 def parse_document_bytes(filename: str, contents: bytes) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
@@ -274,7 +440,11 @@ def parse_document_bytes(filename: str, contents: bytes) -> tuple[list[dict[str,
             raise ValueError(f"Invalid XLSX file: {exc}") from exc
     if suffix in {".png", ".jpg", ".jpeg"}:
         return parse_image_bytes(contents)
-    raise ValueError("Supported uploads are CSV, XLSX, PNG, JPG, and JPEG")
+    if suffix == ".pdf":
+        return parse_pdf_bytes(contents)
+    if suffix == ".docx":
+        return parse_docx_bytes(contents)
+    raise ValueError("Supported uploads are CSV, XLSX, PDF, DOCX, PNG, JPG, and JPEG")
 
 
 def process_rows(
@@ -290,21 +460,43 @@ def process_rows(
     elif file_type == "attendance":
         db.execute(update(EventAttendee).where(EventAttendee.event_id == event_id).values(attended=False))
     if file_type == "post_test":
+        # Re-importing a file only replaces file-sourced results; submissions
+        # made on the public test page ("web") and their flags must survive.
+        web_test_attendees = select(TestResult.attendee_id).where(
+            TestResult.event_id == event_id, TestResult.source == "web"
+        )
         db.execute(
             update(EventAttendee)
-            .where(EventAttendee.event_id == event_id)
+            .where(
+                EventAttendee.event_id == event_id,
+                EventAttendee.attendee_id.not_in(web_test_attendees),
+            )
             .values(test_completed=False, test_score=None)
         )
-        db.execute(delete(TestResult).where(TestResult.event_id == event_id))
+        db.execute(
+            delete(TestResult).where(TestResult.event_id == event_id, TestResult.source == "upload")
+        )
     elif file_type == "survey":
+        web_survey_attendees = select(SurveyResult.attendee_id).where(
+            SurveyResult.event_id == event_id, SurveyResult.source == "web"
+        )
         db.execute(
             update(EventAttendee)
-            .where(EventAttendee.event_id == event_id)
+            .where(
+                EventAttendee.event_id == event_id,
+                EventAttendee.attendee_id.not_in(web_survey_attendees),
+            )
             .values(survey_completed=False)
         )
-        db.execute(delete(SurveyResult).where(SurveyResult.event_id == event_id))
+        db.execute(
+            delete(SurveyResult).where(SurveyResult.event_id == event_id, SurveyResult.source == "upload")
+        )
 
     for row_number, row in enumerate(rows, start=2):
+        # Skip whitespace-only rows (common padding in hand-edited spreadsheets)
+        # without disturbing the row numbers reported for later errors.
+        if not any(str(value).strip() for value in row.values() if value is not None):
+            continue
         try:
             identity = _identity(row)
             attendee = _get_or_create_attendee(db, identity)
@@ -325,6 +517,7 @@ def process_rows(
                         passed=score >= Decimal("80"),
                         completed_at=_parse_datetime(_value(row, "completed_at")),
                         raw_payload=row,
+                        source="upload",
                     )
                 )
             elif file_type == "survey":
@@ -337,6 +530,7 @@ def process_rows(
                         completed=completed,
                         completed_at=_parse_datetime(_value(row, "completed_at")),
                         raw_payload=row,
+                        source="upload",
                     )
                 )
             else:

@@ -12,6 +12,8 @@ if ! pg_isready -q; then
 fi
 
 cd backend
+# The venv is only created (and dependencies installed) once; delete backend/.venv
+# to force a clean reinstall after requirements.txt changes.
 if [ ! -d .venv ]; then
   python3 -m venv .venv
   .venv/bin/pip install -r requirements.txt
@@ -22,7 +24,15 @@ fi
 BACKEND_PID=$!
 cd ..
 
+# Build the web bundle only if it doesn't exist yet; delete frontend/build/web
+# (or run `flutter build web` yourself) to pick up frontend code changes.
 if [ ! -f frontend/build/web/index.html ]; then
+  if ! command -v flutter >/dev/null 2>&1; then
+    echo "Flutter SDK not found on PATH and no prebuilt frontend/build/web exists." >&2
+    echo "Install Flutter (stable) or build the web bundle on another machine first." >&2
+    kill "$BACKEND_PID" 2>/dev/null
+    exit 1
+  fi
   (cd frontend && flutter build web --release --dart-define=API_BASE_URL=http://localhost:$BACKEND_PORT/api)
 fi
 (cd frontend/build/web && python3 -m http.server "$FRONTEND_PORT" --bind 127.0.0.1) &

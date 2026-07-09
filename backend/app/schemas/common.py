@@ -71,6 +71,29 @@ class EventCreate(BaseModel):
     assigned_presenter_id: int | None = None
 
 
+class EventUpdate(BaseModel):
+    """Partial update for an event: every field optional; only fields the
+    client explicitly sends (``exclude_unset``) are applied."""
+
+    title: str | None = Field(default=None, min_length=2, max_length=255)
+    description: str | None = None
+    event_date: date | None = None
+    ceu_hours: Decimal | None = Field(default=None, gt=0)
+    location: str | None = None
+    presenter_name: str | None = None
+    course_instructor: str | None = None
+    event_type: str | None = None
+    post_test_url: str | None = None
+    test_mode: str | None = None
+    test_questions: list[TestQuestionIn] | None = None
+    survey_mode: str | None = None
+    survey_required: bool | None = None
+    external_survey_url: str | None = None
+    certificate_title: str | None = None
+    assigned_presenter_id: int | None = None
+    survey_questions: list[dict] | None = None
+
+
 class EventOut(ORMModel):
     id: int
     title: str
@@ -87,6 +110,7 @@ class EventOut(ORMModel):
     test_questions: list
     survey_mode: str
     survey_required: bool
+    survey_questions: list
     external_survey_url: str | None
     survey_token: str | None
     certificate_title: str

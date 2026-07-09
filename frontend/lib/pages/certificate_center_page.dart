@@ -29,6 +29,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
   List<ComplianceRecord>? records;
   String? error;
   int? workingId;
+  bool uploadingTemplate = false;
 
   @override
   void initState() {
@@ -113,7 +114,10 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
     );
     final file = result?.files.single;
     if (file?.bytes == null) return;
-    setState(() => error = null);
+    setState(() {
+      uploadingTemplate = true;
+      error = null;
+    });
     try {
       await widget.session.api.uploadFile(
         '/events/${event!.id}/certificates/template',
@@ -128,6 +132,8 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       await loadEvents();
     } catch (exception) {
       if (mounted) setState(() => error = exception.toString());
+    } finally {
+      if (mounted) setState(() => uploadingTemplate = false);
     }
   }
 
@@ -145,6 +151,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
 
   @override
   Widget build(BuildContext context) {
+    final visibleRecords = records?.where((record) => record.approved || record.eligible).toList();
     return Padding(
       padding: pagePadding,
       child: Center(
@@ -158,9 +165,11 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                 subtitle: 'Preview, generate, send, and preserve issued certificate versions.',
                 actions: [
                   OutlinedButton.icon(
-                    onPressed: event == null ? null : uploadTemplate,
-                    icon: const Icon(Icons.image_outlined),
-                    label: const Text('Upload template'),
+                    onPressed: event == null || uploadingTemplate ? null : uploadTemplate,
+                    icon: uploadingTemplate
+                        ? const SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.image_outlined),
+                    label: Text(uploadingTemplate ? 'Uploading...' : 'Upload template'),
                   ),
                 ],
               ),
@@ -168,7 +177,13 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
               if (events == null)
                 const LoadingPanel()
               else if (events!.isEmpty)
-                const Expanded(child: Center(child: Text('No events are available.')))
+                const Expanded(
+                  child: EmptyState(
+                    icon: Icons.event_busy_outlined,
+                    message: 'No events are available',
+                    detail: 'Create an event before generating certificates.',
+                  ),
+                )
               else ...[
                 DropdownButtonFormField<int>(
                   initialValue: event?.id,
@@ -191,9 +206,15 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                 const SizedBox(height: 14),
                 Expanded(
                   child: Card(
-                    child: records == null
+                    child: visibleRecords == null
                         ? const LoadingPanel()
-                        : SingleChildScrollView(
+                        : visibleRecords.isEmpty
+                            ? const EmptyState(
+                                icon: Icons.workspace_premium_outlined,
+                                message: 'No attendees are ready for certificates',
+                                detail: 'Attendees appear here once they are eligible or approved in the compliance review.',
+                              )
+                            : SingleChildScrollView(
                             child: SingleChildScrollView(
                               scrollDirection: Axis.horizontal,
                               child: DataTable(
@@ -204,8 +225,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                                   DataColumn(label: Text('Sent')),
                                   DataColumn(label: Text('Actions')),
                                 ],
-                                rows: records!
-                                    .where((record) => record.approved || record.eligible)
+                                rows: visibleRecords
                                     .map(
                                       (record) => DataRow(
                                         cells: [

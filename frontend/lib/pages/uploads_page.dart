@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../core/file_download.dart';
 import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
@@ -55,7 +56,7 @@ class _UploadsPageState extends State<UploadsPage> {
   Future<void> pickAndUpload(String type) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const ['csv', 'xlsx', 'png', 'jpg', 'jpeg'],
+      allowedExtensions: const ['csv', 'xlsx', 'pdf', 'docx', 'png', 'jpg', 'jpeg'],
       withData: true,
     );
     final file = result?.files.single;
@@ -75,6 +76,19 @@ class _UploadsPageState extends State<UploadsPage> {
       if (mounted) setState(() => error = exception.toString());
     } finally {
       if (mounted) setState(() => uploadingType = null);
+    }
+  }
+
+  /// Downloads the originally uploaded file (e.g. a sign-in sheet) so it can
+  /// be reopened after the fact.
+  Future<void> openUpload(Map<String, dynamic> upload) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final filename = upload['original_filename']?.toString() ?? 'upload-${upload['id']}';
+    try {
+      final bytes = await widget.session.api.download('/events/${widget.event.id}/uploads/${upload['id']}/download');
+      downloadBytes(bytes, filename, _contentTypeFor(filename));
+    } catch (exception) {
+      messenger.showSnackBar(SnackBar(content: Text('Could not open $filename: $exception')));
     }
   }
 
@@ -112,7 +126,7 @@ class _UploadsPageState extends State<UploadsPage> {
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'Upload CSV, XLSX, or image scans. Image OCR is best-effort, so review extracted rows before approving certificates.',
+                          'Upload CSV, XLSX, PDF, DOCX, or image scans. Image OCR is best-effort, so review extracted rows before approving certificates.',
                           style: TextStyle(color: Colors.blueGrey.shade700),
                         ),
                       ),
@@ -133,6 +147,7 @@ class _UploadsPageState extends State<UploadsPage> {
                   upload: latestFor(type.$1),
                   loading: uploadingType == type.$1,
                   onUpload: () => pickAndUpload(type.$1),
+                  onOpen: latestFor(type.$1) == null ? null : () => openUpload(latestFor(type.$1)!),
                 ),
                 const SizedBox(height: 12),
               ],
@@ -144,6 +159,20 @@ class _UploadsPageState extends State<UploadsPage> {
   }
 }
 
+/// Content type for re-downloading an original upload, keyed off its extension.
+String _contentTypeFor(String filename) {
+  final extension = filename.contains('.') ? filename.split('.').last.toLowerCase() : '';
+  return switch (extension) {
+    'csv' => 'text/csv',
+    'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'pdf' => 'application/pdf',
+    'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'png' => 'image/png',
+    'jpg' || 'jpeg' => 'image/jpeg',
+    _ => 'application/octet-stream',
+  };
+}
+
 class _UploadRow extends StatelessWidget {
   const _UploadRow({
     required this.title,
@@ -152,6 +181,7 @@ class _UploadRow extends StatelessWidget {
     required this.upload,
     required this.loading,
     required this.onUpload,
+    required this.onOpen,
   });
 
   final String title;
@@ -160,6 +190,9 @@ class _UploadRow extends StatelessWidget {
   final Map<String, dynamic>? upload;
   final bool loading;
   final VoidCallback onUpload;
+
+  /// Downloads the original uploaded file; null while nothing is uploaded.
+  final VoidCallback? onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -187,9 +220,36 @@ class _UploadRow extends StatelessWidget {
                       Text(description, style: const TextStyle(color: Color(0xFF667085), fontSize: 13)),
                       if (upload != null) ...[
                         const SizedBox(height: 7),
-                        Text(
-                          '${upload!['original_filename']} • ${upload!['row_count']} rows • ${DateFormat.yMd().add_jm().format(DateTime.parse(upload!['uploaded_at'] as String).toLocal())}',
-                          style: const TextStyle(fontSize: 12),
+                        Wrap(
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            Tooltip(
+                              message: 'Open the original file',
+                              child: InkWell(
+                                onTap: onOpen,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.file_download_outlined, size: 15, color: Color(0xFF245B85)),
+                                    const SizedBox(width: 3),
+                                    Text(
+                                      '${upload!['original_filename']}',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Color(0xFF245B85),
+                                        fontWeight: FontWeight.w600,
+                                        decoration: TextDecoration.underline,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            Text(
+                              '  • ${upload!['row_count']} rows • ${DateFormat.yMd().add_jm().format(DateTime.parse(upload!['uploaded_at'] as String).toLocal())}',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ],
                         ),
                         if (errors.isNotEmpty)
                           Text('${errors.length} row errors require review', style: const TextStyle(color: Color(0xFFB42318), fontSize: 12)),

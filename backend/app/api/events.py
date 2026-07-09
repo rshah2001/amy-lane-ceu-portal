@@ -21,6 +21,7 @@ from app.schemas.common import (
     EventCreate,
     EventOut,
     EventSummary,
+    EventUpdate,
 )
 from app.services.audit import record_audit
 
@@ -197,6 +198,38 @@ def create_event(
     db.add(event)
     db.flush()
     record_audit(db, "event.created", "training_event", event.id, current_user, event.id)
+    db.commit()
+    db.refresh(event)
+    return event
+
+
+@router.put("/events/{event_id}", response_model=EventOut)
+def update_event(
+    event_id: int,
+    payload: EventUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> TrainingEvent:
+    event = get_visible_event(db, event_id, current_user)
+    # Only apply fields the client explicitly sent; editing test_questions /
+    # survey_questions replaces the whole list. Tokens are never regenerated.
+    data = payload.model_dump(exclude_unset=True)
+    presenter_id = data.get("assigned_presenter_id")
+    if presenter_id is not None:
+        presenter = db.scalar(select(User).where(User.id == presenter_id))
+        if not presenter or not presenter.is_active:
+            raise HTTPException(status_code=400, detail="Assigned presenter not found")
+    for field, value in data.items():
+        setattr(event, field, value)
+    record_audit(
+        db,
+        "event.updated",
+        "training_event",
+        event.id,
+        current_user,
+        event.id,
+        {"fields": sorted(data.keys())},
+    )
     db.commit()
     db.refresh(event)
     return event

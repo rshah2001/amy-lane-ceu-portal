@@ -23,14 +23,24 @@ class EventDetailPage extends StatelessWidget {
   final bool canManageCertificates;
   final ValueChanged<String> onNavigate;
 
-  Future<void> downloadSurveyQr() async {
-    final bytes = await session.api.download('/events/${event.id}/survey-qr');
-    downloadBytes(bytes, '${event.title}-survey-qr.png', 'image/png');
+  Future<void> downloadSurveyQr(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final bytes = await session.api.download('/events/${event.id}/survey-qr');
+      downloadBytes(bytes, '${event.title}-survey-qr.png', 'image/png');
+    } catch (exception) {
+      messenger.showSnackBar(SnackBar(content: Text('Survey QR download failed: $exception')));
+    }
   }
 
-  Future<void> downloadTestQr() async {
-    final bytes = await session.api.download('/events/${event.id}/test-qr');
-    downloadBytes(bytes, '${event.title}-post-test-qr.png', 'image/png');
+  Future<void> downloadTestQr(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final bytes = await session.api.download('/events/${event.id}/test-qr');
+      downloadBytes(bytes, '${event.title}-post-test-qr.png', 'image/png');
+    } catch (exception) {
+      messenger.showSnackBar(SnackBar(content: Text('Post-test QR download failed: $exception')));
+    }
   }
 
   Future<void> distribute(BuildContext context) async {
@@ -84,7 +94,15 @@ class EventDetailPage extends StatelessWidget {
               PageHeader(
                 title: event.title,
                 subtitle: '${DateFormat.yMMMMd().format(event.eventDate)}  •  ${event.ceuHours.toStringAsFixed(1)} CEU hours',
-                actions: [StatusBadge(event.status.toUpperCase(), tone: BadgeTone.warning)],
+                actions: [
+                  if (isAdmin)
+                    OutlinedButton.icon(
+                      onPressed: () => onNavigate('edit'),
+                      icon: const Icon(Icons.edit_outlined, size: 18),
+                      label: const Text('Edit event'),
+                    ),
+                  StatusBadge(event.status.toUpperCase(), tone: BadgeTone.warning),
+                ],
               ),
               const SizedBox(height: 22),
               Card(
@@ -126,12 +144,12 @@ class EventDetailPage extends StatelessWidget {
                           const Text('Participant links', style: TextStyle(fontWeight: FontWeight.w700)),
                           if (hasTest)
                             OutlinedButton.icon(
-                              onPressed: downloadTestQr,
+                              onPressed: () => downloadTestQr(context),
                               icon: const Icon(Icons.qr_code_2),
                               label: Text(event.testMode == 'internal' ? 'Download post-test QR' : 'Download external test QR'),
                             ),
                           OutlinedButton.icon(
-                            onPressed: downloadSurveyQr,
+                            onPressed: () => downloadSurveyQr(context),
                             icon: const Icon(Icons.qr_code_2),
                             label: Text(event.surveyMode == 'internal' ? 'Download survey QR' : 'Download external survey QR'),
                           ),
@@ -380,6 +398,25 @@ class _SummaryStrip extends StatelessWidget {
     return FutureBuilder<dynamic>(
       future: session.api.get('/events/$eventId/summary'),
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Card(
+            child: Padding(
+              padding: const EdgeInsets.all(22),
+              child: Row(
+                children: [
+                  const Icon(Icons.error_outline, color: Color(0xFFB42318), size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Event summary could not be loaded: ${snapshot.error}',
+                      style: const TextStyle(fontSize: 13, color: Color(0xFF667085)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
         if (!snapshot.hasData) {
           return const Card(child: Padding(padding: EdgeInsets.all(22), child: LinearProgressIndicator()));
         }
