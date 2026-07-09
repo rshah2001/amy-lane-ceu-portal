@@ -275,3 +275,19 @@ class TestOverrideApprove:
         bob = next(r for r in rows_after if r["id"] == bob_id)
         assert bob["approved"] is True
         assert bob["compliance_status"] == "approved"
+
+    def test_preview_works_for_manually_issued_attendee(self, client, admin, event):
+        client.post(
+            f"/api/events/{event['id']}/certificates/issue",
+            json={"full_name": "Peek At", "email": "peek.at@example.com"},
+            headers=admin.headers,
+        )
+        rows = client.get(
+            f"/api/events/{event['id']}/compliance", headers=admin.headers
+        ).json()
+        link_id = next(r["id"] for r in rows if r["email"] == "peek.at@example.com")
+        response = client.get(
+            f"/api/events/{event['id']}/certificates/{link_id}/preview", headers=admin.headers
+        )
+        assert response.status_code == 200, response.text
+        assert response.content.startswith(b"%PDF")

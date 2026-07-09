@@ -327,7 +327,9 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                                               spacing: 8,
                                               children: [
                                                 OutlinedButton.icon(
-                                                  onPressed: !record.eligible || workingId == record.id
+                                                  // Approved covers manually issued / override-approved
+                                                  // attendees, who are never "eligible".
+                                                  onPressed: !(record.eligible || record.approved) || workingId == record.id
                                                       ? null
                                                       : () => preview(record),
                                                   icon: const Icon(Icons.visibility_outlined, size: 18),

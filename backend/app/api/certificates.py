@@ -116,8 +116,10 @@ def preview_certificate(
 ) -> FileResponse:
     get_visible_event(db, event_id, current_user)
     link = get_link(db, event_id, link_id)
-    if not link.eligible:
-        raise HTTPException(status_code=409, detail="Only eligible attendees can be previewed")
+    # Approved covers manually issued / override-approved attendees, who
+    # never satisfy the eligibility rules but still get certificates.
+    if not (link.eligible or link.approved):
+        raise HTTPException(status_code=409, detail="Only eligible or approved attendees can be previewed")
     preview_path = settings.certificates_dir / "previews" / f"{uuid4().hex}.pdf"
     preview_path.parent.mkdir(parents=True, exist_ok=True)
     generate_certificate_pdf(link, "PREVIEW", output_path=preview_path, preview=True)
