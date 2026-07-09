@@ -200,6 +200,9 @@ class _ResponseTile extends StatelessWidget {
         style: const TextStyle(fontSize: 12, color: Color(0xFF667085)),
       ),
       childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
+      // Both are needed: without expandedAlignment the answers Column
+      // shrink-wraps and floats to the center of the tile.
+      expandedAlignment: Alignment.topLeft,
       expandedCrossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (answers.isEmpty)
