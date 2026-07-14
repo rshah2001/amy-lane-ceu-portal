@@ -21,6 +21,12 @@ from app.services.csv_import import (
 )
 
 
+def _fixture_font() -> ImageFont.FreeTypeFont:
+    """Large, portable font for OCR fixtures: Pillow's bundled scalable
+    default (10.1+), so the tests don't depend on any OS-specific font path."""
+    return ImageFont.load_default(size=30)
+
+
 class ComplianceWorkflowTest(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -123,7 +129,7 @@ class ComplianceWorkflowTest(unittest.TestCase):
         self.assertTrue(link.registered)
 
     def test_png_ocr_extracts_comma_separated_table_text(self) -> None:
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 30)
+        font = _fixture_font()
         image = Image.new("RGB", (1400, 220), "white")
         draw = ImageDraw.Draw(image)
         draw.text((30, 30), "Full Name | Email | Company", font=font, fill="black")
@@ -147,7 +153,7 @@ class ComplianceWorkflowTest(unittest.TestCase):
         from reportlab.lib.utils import ImageReader
         from reportlab.pdfgen.canvas import Canvas
 
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 30)
+        font = _fixture_font()
         image = Image.new("RGB", (1400, 220), "white")
         draw = ImageDraw.Draw(image)
         draw.text((30, 30), "Full Name | Email | Company", font=font, fill="black")

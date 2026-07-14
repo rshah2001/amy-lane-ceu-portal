@@ -40,14 +40,10 @@ jobs:
           pip install -r requirements.txt pytest
 
       # Tests run against in-memory SQLite, so no Postgres service is needed.
-      #
-      # The PNG OCR test is deselected because its fixture renders text with
-      # the macOS-only font /System/Library/Fonts/Supplemental/Arial.ttf, so
-      # ImageFont.truetype raises OSError on Linux runners before OCR is even
-      # attempted. Re-enable it once the fixture uses a portable font
-      # (tesseract-ocr itself is already installed above).
+      # OCR fixtures render text with Pillow's bundled font, so they run on
+      # Linux and macOS alike (tesseract-ocr is installed above).
       - name: Run tests
-        run: python -m pytest tests -k "not test_png_ocr_extracts_comma_separated_table_text"
+        run: python -m pytest tests
 
   frontend:
     name: Frontend analyze & test (Flutter)
