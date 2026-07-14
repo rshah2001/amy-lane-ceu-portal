@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class ORMModel(BaseModel):
@@ -52,6 +52,29 @@ class TestQuestionIn(BaseModel):
     correct_index: int = Field(ge=0)
 
 
+class SurveyQuestionIn(BaseModel):
+    id: str
+    label: str = Field(min_length=1)
+    # "text" renders a free-text box; "choice" renders one pick from options
+    # (e.g. a Strongly Agree ... Strongly Disagree scale).
+    type: Literal["text", "choice"] = "text"
+    options: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_options(self) -> "SurveyQuestionIn":
+        self.options = [option.strip() for option in self.options if option.strip()]
+        if self.type == "choice" and len(self.options) < 2:
+            raise ValueError("A multiple-choice survey question needs at least two options")
+        return self
+
+
+class SurveyTemplateUpdate(BaseModel):
+    """Default survey questions for newly created events. An empty list
+    resets the template to the built-in defaults."""
+
+    questions: list[SurveyQuestionIn]
+
+
 class EventCreate(BaseModel):
     title: str = Field(min_length=2, max_length=255)
     description: str | None = None
@@ -91,7 +114,7 @@ class EventUpdate(BaseModel):
     external_survey_url: str | None = None
     certificate_title: str | None = None
     assigned_presenter_id: int | None = None
-    survey_questions: list[dict] | None = None
+    survey_questions: list[SurveyQuestionIn] | None = None
 
 
 class EventOut(ORMModel):

@@ -13,6 +13,7 @@ from app.db.session import SessionLocal
 from app.models.training_event import TrainingEvent
 from app.models.user import User
 from app.services.audit import record_audit
+from app.services.survey_template import get_survey_template
 
 CAMS_TEMPLATE = Path(__file__).resolve().parent / "assets" / "cams_lunch_learn_cert.pdf"
 
@@ -86,11 +87,7 @@ def main() -> None:
             if not event.certificate_template_path and template_path:
                 event.certificate_template_path = template_path
             if not event.survey_questions:
-                event.survey_questions = [
-                    {"id": "liked", "label": "What did you like about this course?"},
-                    {"id": "improve", "label": "What could we improve?"},
-                    {"id": "learned", "label": "What is one thing you learned?"},
-                ]
+                event.survey_questions = get_survey_template(db)
         db.commit()
         print("Seed complete")
         if admin_created:

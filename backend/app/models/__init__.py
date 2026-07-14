@@ -1,3 +1,4 @@
+from app.models.app_setting import AppSetting
 from app.models.attendee import Attendee
 from app.models.audit_log import AuditLog
 from app.models.certificate import Certificate
@@ -11,6 +12,7 @@ from app.models.uploaded_file import UploadedFile
 from app.models.user import User
 
 __all__ = [
+    "AppSetting",
     "Attendee",
     "AuditLog",
     "Certificate",

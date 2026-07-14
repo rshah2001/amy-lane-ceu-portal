@@ -70,6 +70,82 @@ class TestSurveySubmission:
         assert flags["sam.lee@example.com"] is True
         assert flags["pat.doe@example.com"] is True
 
+    def test_choice_question_accepts_configured_option(self, client, admin):
+        event = create_event(client, admin.headers)
+        scale = ["Strongly Agree", "Agree", "Neither Agree or Disagree", "Disagree", "Strongly Disagree"]
+        updated = client.put(
+            f"/api/events/{event['id']}",
+            headers=admin.headers,
+            json={
+                "survey_questions": [
+                    {"id": "pace", "label": "The pace was right", "type": "choice", "options": scale},
+                    {"id": "improve", "label": "What could we improve?"},
+                ]
+            },
+        )
+        assert updated.status_code == 200, updated.text
+
+        public = client.get(f"/api/public/surveys/{event['survey_token']}").json()
+        assert public["questions"][0]["type"] == "choice"
+        assert public["questions"][0]["options"] == scale
+        assert public["questions"][1]["type"] == "text"
+
+        response = submit(client, event["survey_token"], {"pace": "Agree", "improve": "Nothing"})
+        assert response.status_code == 200, response.text
+        rows = client.get(
+            f"/api/survey-responses?event_id={event['id']}", headers=admin.headers
+        ).json()
+        assert rows[0]["answers"] == {"pace": "Agree", "improve": "Nothing"}
+
+    def test_choice_question_rejects_answer_outside_options(self, client, admin):
+        event = create_event(client, admin.headers)
+        client.put(
+            f"/api/events/{event['id']}",
+            headers=admin.headers,
+            json={
+                "survey_questions": [
+                    {"id": "pace", "label": "The pace was right", "type": "choice", "options": ["Agree", "Disagree"]},
+                ]
+            },
+        )
+        response = submit(client, event["survey_token"], {"pace": "Whatever I want"})
+        assert response.status_code == 422, response.text
+
+    def test_choice_question_requires_two_options(self, client, admin):
+        event = create_event(client, admin.headers)
+        response = client.put(
+            f"/api/events/{event['id']}",
+            headers=admin.headers,
+            json={
+                "survey_questions": [
+                    {"id": "pace", "label": "The pace was right", "type": "choice", "options": ["Agree"]},
+                ]
+            },
+        )
+        assert response.status_code == 422, response.text
+
+    def test_insights_keep_choice_answers_out_of_themes(self, client, admin):
+        event = create_event(client, admin.headers)
+        client.put(
+            f"/api/events/{event['id']}",
+            headers=admin.headers,
+            json={
+                "survey_questions": [
+                    {"id": "pace", "label": "The pace was right", "type": "choice",
+                     "options": ["Strongly Agree", "Disagree"]},
+                    {"id": "improve", "label": "What could we improve?"},
+                ]
+            },
+        )
+        submit(client, event["survey_token"], {"pace": "Strongly Agree", "improve": "More handouts please"})
+        insights = client.get(
+            f"/api/survey-insights?event_id={event['id']}", headers=admin.headers
+        ).json()
+        assert insights["answers_by_question"]["pace"] == ["Strongly Agree"]
+        themes = {item["theme"] for item in insights["common_themes"]}
+        assert "handouts" in themes
+        assert "strongly" not in themes and "agree" not in themes
+
     def test_reuploading_survey_file_replaces_only_file_rows(self, client, admin):
         event = create_event(client, admin.headers)
         submit(client, event["survey_token"], {"liked": "Web response"})

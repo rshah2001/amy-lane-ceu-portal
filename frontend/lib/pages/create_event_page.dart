@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
+import '../widgets/survey_question_editor.dart';
 
 class CreateEventPage extends StatefulWidget {
   const CreateEventPage({super.key, required this.session, required this.onSaved, this.event});
@@ -34,7 +35,7 @@ class _CreateEventPageState extends State<CreateEventPage> {
   bool surveyRequired = false;
   String testMode = 'external';
   final List<_QuestionDraft> testQuestions = [];
-  final List<_SurveyQuestionDraft> surveyQuestions = [];
+  final List<SurveyQuestionDraft> surveyQuestions = [];
   DateTime date = DateTime.now().add(const Duration(days: 14));
   List<Map<String, dynamic>> presenters = [];
   int? assignedPresenterId;
@@ -70,7 +71,7 @@ class _CreateEventPageState extends State<CreateEventPage> {
       testQuestions.add(_QuestionDraft.fromJson(question));
     }
     for (final question in event.surveyQuestions) {
-      surveyQuestions.add(_SurveyQuestionDraft.fromJson(question));
+      surveyQuestions.add(SurveyQuestionDraft.fromJson(question));
     }
   }
 
@@ -122,10 +123,10 @@ class _CreateEventPageState extends State<CreateEventPage> {
   }
 
   void addSurveyQuestion() {
-    setState(() => surveyQuestions.add(_SurveyQuestionDraft()));
+    setState(() => surveyQuestions.add(SurveyQuestionDraft()));
   }
 
-  void removeSurveyQuestion(_SurveyQuestionDraft question) {
+  void removeSurveyQuestion(SurveyQuestionDraft question) {
     setState(() {
       surveyQuestions.remove(question);
       question.dispose();
@@ -371,16 +372,18 @@ class _CreateEventPageState extends State<CreateEventPage> {
                           const Align(
                             alignment: Alignment.centerLeft,
                             child: Text(
-                              'Survey questions attendees are asked. Edits replace the current list.',
+                              'Survey questions attendees are asked. Edits replace the current list. '
+                              'Switch a question to "Multiple choice" for an agree/disagree scale — the standard scale is pre-filled.',
                               style: TextStyle(fontSize: 12, color: Color(0xFF667085)),
                             ),
                           ),
                           const SizedBox(height: 10),
                           for (var i = 0; i < surveyQuestions.length; i++) ...[
-                            _SurveyQuestionEditor(
+                            SurveyQuestionEditor(
                               index: i + 1,
                               draft: surveyQuestions[i],
                               onRemove: () => removeSurveyQuestion(surveyQuestions[i]),
+                              onChanged: () => setState(() {}),
                             ),
                             const SizedBox(height: 10),
                           ],
@@ -579,63 +582,6 @@ class _QuestionDraft {
   }
 }
 
-class _SurveyQuestionDraft {
-  _SurveyQuestionDraft()
-      : id = null,
-        label = TextEditingController();
-
-  _SurveyQuestionDraft.fromJson(Map<String, dynamic> json)
-      : id = json['id']?.toString(),
-        label = TextEditingController(text: json['label']?.toString() ?? '');
-
-  /// Original question id when editing, so past answers keyed by question id
-  /// still line up. New questions get a positional id.
-  final String? id;
-  final TextEditingController label;
-
-  Map<String, dynamic> toJson(String fallbackId) => {
-        'id': id ?? fallbackId,
-        'label': label.text.trim(),
-      };
-
-  void dispose() {
-    label.dispose();
-  }
-}
-
-class _SurveyQuestionEditor extends StatelessWidget {
-  const _SurveyQuestionEditor({
-    required this.index,
-    required this.draft,
-    required this.onRemove,
-  });
-
-  final int index;
-  final _SurveyQuestionDraft draft;
-  final VoidCallback onRemove;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: TextFormField(
-            controller: draft.label,
-            decoration: InputDecoration(labelText: 'Survey question $index'),
-            validator: (value) => value == null || value.trim().isEmpty ? 'Enter the question or remove it' : null,
-          ),
-        ),
-        const SizedBox(width: 4),
-        IconButton(
-          tooltip: 'Remove survey question',
-          onPressed: onRemove,
-          icon: const Icon(Icons.delete_outline, size: 20),
-        ),
-      ],
-    );
-  }
-}
 
 class _QuestionEditor extends StatelessWidget {
   const _QuestionEditor({

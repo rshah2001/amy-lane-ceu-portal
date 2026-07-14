@@ -27,6 +27,7 @@ from app.schemas.common import (
     EventUpdate,
 )
 from app.services.audit import record_audit
+from app.services.survey_template import get_survey_template
 
 PASSING_SCORE = Decimal("80")
 
@@ -193,11 +194,9 @@ def create_event(
         survey_token=uuid4().hex,
         test_token=uuid4().hex,
         checkin_token=uuid4().hex,
-        survey_questions=[
-            {"id": "liked", "label": "What did you like about this course?"},
-            {"id": "improve", "label": "What could we improve?"},
-            {"id": "learned", "label": "What is one thing you learned?"},
-        ],
+        # A copy of the admin-editable template; from here on the questions
+        # belong to this event alone.
+        survey_questions=get_survey_template(db),
     )
     db.add(event)
     db.flush()
@@ -218,6 +217,10 @@ def update_event(
     # Only apply fields the client explicitly sent; editing test_questions /
     # survey_questions replaces the whole list. Tokens are never regenerated.
     data = payload.model_dump(exclude_unset=True)
+    # exclude_unset also drops defaults inside nested models, so re-dump the
+    # survey questions in full to always store their type/options normalized.
+    if data.get("survey_questions") is not None:
+        data["survey_questions"] = [q.model_dump() for q in payload.survey_questions]
     presenter_id = data.get("assigned_presenter_id")
     if presenter_id is not None:
         presenter = db.scalar(select(User).where(User.id == presenter_id))

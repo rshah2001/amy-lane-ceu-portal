@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/session.dart';
 import '../widgets/common.dart';
+import '../widgets/survey_question_editor.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key, required this.session});
@@ -82,6 +83,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 const SizedBox(height: 14),
+                _SurveyTemplateCard(session: widget.session),
+                const SizedBox(height: 14),
               ],
               Card(
                 child: Padding(
@@ -105,6 +108,141 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Admin editor for the default survey questions new events start with.
+/// Existing events keep their own copy — this only affects events created
+/// after saving.
+class _SurveyTemplateCard extends StatefulWidget {
+  const _SurveyTemplateCard({required this.session});
+  final SessionController session;
+
+  @override
+  State<_SurveyTemplateCard> createState() => _SurveyTemplateCardState();
+}
+
+class _SurveyTemplateCardState extends State<_SurveyTemplateCard> {
+  final formKey = GlobalKey<FormState>();
+  List<SurveyQuestionDraft>? questions;
+  String? error;
+  bool saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  @override
+  void dispose() {
+    for (final question in questions ?? const <SurveyQuestionDraft>[]) {
+      question.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> load() async {
+    try {
+      final result = await widget.session.api.get('/settings/survey-template') as Map<String, dynamic>;
+      if (mounted) {
+        setState(() => questions = [
+              for (final question in (result['questions'] as List).cast<Map<String, dynamic>>())
+                SurveyQuestionDraft.fromJson(question),
+            ]);
+      }
+    } catch (exception) {
+      if (mounted) setState(() => error = exception.toString());
+    }
+  }
+
+  Future<void> save() async {
+    if (!formKey.currentState!.validate()) return;
+    setState(() {
+      saving = true;
+      error = null;
+    });
+    try {
+      final result = await widget.session.api.put('/settings/survey-template', {
+        'questions': [for (var i = 0; i < questions!.length; i++) questions![i].toJson('s${i + 1}')],
+      }) as Map<String, dynamic>;
+      if (!mounted) return;
+      for (final question in questions!) {
+        question.dispose();
+      }
+      setState(() => questions = [
+            for (final question in (result['questions'] as List).cast<Map<String, dynamic>>())
+              SurveyQuestionDraft.fromJson(question),
+          ]);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Default survey questions saved — they apply to newly created events.')),
+      );
+    } catch (exception) {
+      if (mounted) setState(() => error = exception.toString());
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const ListTile(title: Text('Default survey questions', style: TextStyle(fontWeight: FontWeight.w700))),
+          divider,
+          Padding(
+            padding: const EdgeInsets.all(18),
+            child: questions == null && error == null
+                ? const LoadingPanel()
+                : Form(
+                    key: formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Text(
+                          'Every new event starts with these questions; each event keeps its own copy, '
+                          'so changes here never affect existing events. Use "Multiple choice" for an '
+                          'agree/disagree scale — the standard scale is pre-filled.',
+                          style: TextStyle(fontSize: 12, color: Color(0xFF667085)),
+                        ),
+                        const SizedBox(height: 12),
+                        for (var i = 0; i < (questions?.length ?? 0); i++) ...[
+                          SurveyQuestionEditor(
+                            index: i + 1,
+                            draft: questions![i],
+                            onRemove: () => setState(() => questions!.removeAt(i).dispose()),
+                            onChanged: () => setState(() {}),
+                          ),
+                          const SizedBox(height: 10),
+                        ],
+                        if (error != null) ...[
+                          Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                          const SizedBox(height: 10),
+                        ],
+                        Row(
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: () => setState(() => (questions ??= []).add(SurveyQuestionDraft())),
+                              icon: const Icon(Icons.add),
+                              label: const Text('Add question'),
+                            ),
+                            const Spacer(),
+                            ElevatedButton.icon(
+                              onPressed: saving || questions == null ? null : save,
+                              icon: const Icon(Icons.save_outlined),
+                              label: Text(saving ? 'Saving...' : 'Save defaults'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+          ),
+        ],
       ),
     );
   }

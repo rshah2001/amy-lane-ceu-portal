@@ -62,6 +62,18 @@ def submit_public_survey(
     db: Session = Depends(get_db),
 ) -> dict:
     event = get_survey_event(db, token)
+    # Choice questions only accept one of their configured options.
+    options_for = {
+        str(question.get("id")): question.get("options") or []
+        for question in event.survey_questions or []
+        if question.get("type") == "choice"
+    }
+    for question_id, answer in payload.answers.items():
+        if question_id in options_for and answer not in options_for[question_id]:
+            raise HTTPException(
+                status_code=422,
+                detail="One of the answers is not a valid option for its question.",
+            )
     attendee = match_or_create_attendee(db, payload.full_name, str(payload.email))
     link = get_or_create_link(db, event.id, attendee.id)
     # Every submission is kept as its own row: the same attendee may answer
@@ -209,6 +221,15 @@ def survey_insights(
     if event_id:
         query = query.where(SurveyResult.event_id == event_id)
     results = list(db.scalars(query))
+    # Scale/choice answers ("Strongly Agree", ...) would swamp the free-text
+    # word themes, so they are counted per question but kept out of the themes.
+    event_ids = {result.event_id for result in results}
+    choice_questions: set[tuple[int, str]] = set()
+    if event_ids:
+        for event in db.scalars(select(TrainingEvent).where(TrainingEvent.id.in_(event_ids))):
+            for question in event.survey_questions or []:
+                if question.get("type") == "choice":
+                    choice_questions.add((event.id, str(question.get("id"))))
     answers: dict[str, list[str]] = defaultdict(list)
     words: Counter[str] = Counter()
     for result in results:
@@ -217,6 +238,8 @@ def survey_insights(
             if not text:
                 continue
             answers[question].append(text)
+            if (result.event_id, question) in choice_questions:
+                continue
             words.update(
                 word
                 for word in re.findall(r"[a-zA-Z]{4,}", text.lower())

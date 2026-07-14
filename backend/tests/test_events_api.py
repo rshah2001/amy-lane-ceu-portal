@@ -71,11 +71,14 @@ class TestEventUpdate:
         assert response.status_code == 200, response.text
         assert response.json()["test_questions"] == new_test_questions
 
-        # The default 3 survey questions are fully replaced by the new list,
-        # served through the existing (unchanged) survey token.
+        # The default 3 survey questions are fully replaced by the new list
+        # (stored normalized with type/options), served through the existing
+        # (unchanged) survey token.
         survey = client.get(f"/api/public/surveys/{event['survey_token']}")
         assert survey.status_code == 200, survey.text
-        assert survey.json()["questions"] == new_survey_questions
+        assert survey.json()["questions"] == [
+            {"id": "custom", "label": "Any other feedback?", "type": "text", "options": []}
+        ]
 
     def test_update_validates_assigned_presenter(self, client, admin, presenter):
         event = create_event(client, admin.headers)

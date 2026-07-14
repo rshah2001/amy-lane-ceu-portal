@@ -28,6 +28,7 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
   final email = TextEditingController();
   Map<String, dynamic>? survey;
   final answers = <String, TextEditingController>{};
+  final choiceAnswers = <String, String?>{};
   String? error;
   bool submitted = false;
   bool saving = false;
@@ -44,7 +45,11 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
     try {
       final result = await widget.api.get('/public/surveys/${widget.token}') as Map<String, dynamic>;
       for (final question in result['questions'] as List) {
-        answers[question['id'] as String] = TextEditingController();
+        if (question['type'] == 'choice') {
+          choiceAnswers[question['id'] as String] = null;
+        } else {
+          answers[question['id'] as String] = TextEditingController();
+        }
       }
       if (mounted) setState(() => survey = result);
     } catch (exception) {
@@ -59,6 +64,8 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
     final filledAnswers = {
       for (final entry in answers.entries)
         if (entry.value.text.trim().isNotEmpty) entry.key: entry.value.text.trim(),
+      for (final entry in choiceAnswers.entries)
+        if (entry.value != null) entry.key: entry.value!,
     };
     if (filledAnswers.isEmpty) {
       setState(() => error = 'Please answer at least one question.');
@@ -153,12 +160,42 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
                                     ),
                                     for (final question in survey!['questions'] as List) ...[
                                       const SizedBox(height: 18),
-                                      TextFormField(
-                                        controller: answers[question['id']],
-                                        maxLines: 3,
-                                        textCapitalization: TextCapitalization.sentences,
-                                        decoration: InputDecoration(labelText: question['label'] as String),
-                                      ),
+                                      if (question['type'] == 'choice')
+                                        InputDecorator(
+                                          decoration: InputDecoration(
+                                            labelText: question['label'] as String,
+                                            contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                                          ),
+                                          child: RadioGroup<String>(
+                                            groupValue: choiceAnswers[question['id']],
+                                            onChanged: (value) => setState(
+                                              () => choiceAnswers[question['id'] as String] = value,
+                                            ),
+                                            child: Column(
+                                              children: [
+                                                for (final option in (question['options'] as List?) ?? const [])
+                                                  InkWell(
+                                                    onTap: () => setState(
+                                                      () => choiceAnswers[question['id'] as String] = option.toString(),
+                                                    ),
+                                                    child: Row(
+                                                      children: [
+                                                        Radio<String>(value: option.toString()),
+                                                        Expanded(child: Text(option.toString())),
+                                                      ],
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          ),
+                                        )
+                                      else
+                                        TextFormField(
+                                          controller: answers[question['id']],
+                                          maxLines: 3,
+                                          textCapitalization: TextCapitalization.sentences,
+                                          decoration: InputDecoration(labelText: question['label'] as String),
+                                        ),
                                     ],
                                     if (error != null) ...[
                                       const SizedBox(height: 12),
