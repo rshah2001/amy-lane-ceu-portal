@@ -38,6 +38,27 @@ def generate(client, headers, event_id, link_id):
     )
 
 
+def send(client, headers, event_id, link_id):
+    return client.post(
+        f"/api/events/{event_id}/certificates/{link_id}/send", headers=headers
+    )
+
+
+def event_status(client, headers, event_id) -> str:
+    response = client.get(f"/api/events/{event_id}", headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()["status"]
+
+
+def override_approve(client, headers, event_id, link_id) -> None:
+    response = client.post(
+        f"/api/events/{event_id}/compliance/approve",
+        json={"event_attendee_ids": [link_id], "approved": True, "override": True},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+
+
 class TestIssuance:
     def test_generate_requires_approval(self, client, admin, event, rows):
         # Alice is eligible but not yet approved.
@@ -238,6 +259,119 @@ class TestManualIssue:
             headers=presenter.headers,
         )
         assert response.status_code == 403
+
+
+class TestAutoCompleteStatus:
+    """Sending the last outstanding certificate flips the event to
+    "completed"; anything approved-but-unsent keeps it out of that state."""
+
+    def test_single_send_completes_event_when_all_approved_are_sent(
+        self, client, admin, event, approved_alice
+    ):
+        generate(client, admin.headers, event["id"], approved_alice)
+        # Uploads put the event in review; generation alone must not finish it.
+        assert event_status(client, admin.headers, event["id"]) == "review"
+
+        response = send(client, admin.headers, event["id"], approved_alice)
+        assert response.status_code == 200, response.text
+        assert event_status(client, admin.headers, event["id"]) == "completed"
+
+    def test_single_send_does_not_complete_while_another_cert_is_unsent(
+        self, client, admin, event, rows, approved_alice
+    ):
+        bob_id = rows["Bob Ramos"]["id"]
+        override_approve(client, admin.headers, event["id"], bob_id)
+        generate(client, admin.headers, event["id"], approved_alice)
+        generate(client, admin.headers, event["id"], bob_id)
+
+        response = send(client, admin.headers, event["id"], approved_alice)
+        assert response.status_code == 200, response.text
+        # Bob's certificate is generated but unsent, so the event stays open.
+        assert event_status(client, admin.headers, event["id"]) == "review"
+
+        response = send(client, admin.headers, event["id"], bob_id)
+        assert response.status_code == 200, response.text
+        assert event_status(client, admin.headers, event["id"]) == "completed"
+
+    def test_single_send_does_not_complete_while_an_approval_lacks_a_cert(
+        self, client, admin, event, rows, approved_alice
+    ):
+        # Bob is approved but his certificate was never generated.
+        override_approve(client, admin.headers, event["id"], rows["Bob Ramos"]["id"])
+        generate(client, admin.headers, event["id"], approved_alice)
+
+        response = send(client, admin.headers, event["id"], approved_alice)
+        assert response.status_code == 200, response.text
+        assert event_status(client, admin.headers, event["id"]) == "review"
+
+    def test_send_all_completes_event(self, client, admin, event, rows, approved_alice):
+        override_approve(client, admin.headers, event["id"], rows["Bob Ramos"]["id"])
+        response = client.post(
+            f"/api/events/{event['id']}/certificates/generate-all", headers=admin.headers
+        )
+        assert response.status_code == 200, response.text
+
+        response = client.post(
+            f"/api/events/{event['id']}/certificates/send-all", headers=admin.headers
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["processed"] == 2
+        assert event_status(client, admin.headers, event["id"]) == "completed"
+
+    def test_send_all_does_not_complete_when_an_approval_lacks_a_cert(
+        self, client, admin, event, rows, approved_alice
+    ):
+        # Only Alice's certificate exists; Bob is approved with none, so
+        # send-all delivers Alice's but must leave the event unfinished.
+        override_approve(client, admin.headers, event["id"], rows["Bob Ramos"]["id"])
+        generate(client, admin.headers, event["id"], approved_alice)
+
+        response = client.post(
+            f"/api/events/{event['id']}/certificates/send-all", headers=admin.headers
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["processed"] == 1
+        assert event_status(client, admin.headers, event["id"]) == "review"
+
+    def test_manual_issue_after_completion_keeps_event_completed(
+        self, client, admin, event, approved_alice
+    ):
+        generate(client, admin.headers, event["id"], approved_alice)
+        send(client, admin.headers, event["id"], approved_alice)
+        assert event_status(client, admin.headers, event["id"]) == "completed"
+
+        # A late walk-in issued manually must not reopen the event.
+        response = client.post(
+            f"/api/events/{event['id']}/certificates/issue",
+            json={"full_name": "Late Walkin", "email": "late.walkin@example.com"},
+            headers=admin.headers,
+        )
+        assert response.status_code == 201, response.text
+        assert event_status(client, admin.headers, event["id"]) == "completed"
+
+    def test_admin_can_still_set_status_manually(self, client, admin, event, approved_alice):
+        generate(client, admin.headers, event["id"], approved_alice)
+        send(client, admin.headers, event["id"], approved_alice)
+        assert event_status(client, admin.headers, event["id"]) == "completed"
+
+        # Admin override: reopen the event, then complete it again by hand.
+        update = client.put(
+            f"/api/events/{event['id']}", json={"status": "review"}, headers=admin.headers
+        )
+        assert update.status_code == 200, update.text
+        assert update.json()["status"] == "review"
+
+        update = client.put(
+            f"/api/events/{event['id']}", json={"status": "completed"}, headers=admin.headers
+        )
+        assert update.status_code == 200, update.text
+        assert update.json()["status"] == "completed"
+
+        # Unknown statuses are rejected rather than stored.
+        update = client.put(
+            f"/api/events/{event['id']}", json={"status": "bogus"}, headers=admin.headers
+        )
+        assert update.status_code == 422, update.text
 
 
 class TestOverrideApprove:

@@ -239,6 +239,7 @@ String formatDateTime(DateTime value) {
 (String, BadgeTone) eventStatusDisplay(String status) => switch (status) {
       'draft' => ('AWAITING DOCUMENTS', BadgeTone.info),
       'review' => ('IN REVIEW', BadgeTone.warning),
+      'completed' => ('COMPLETED', BadgeTone.success),
       _ => (status.toUpperCase(), BadgeTone.neutral),
     };
 
