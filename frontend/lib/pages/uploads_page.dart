@@ -20,6 +20,17 @@ class _UploadsPageState extends State<UploadsPage> {
   String? error;
   String? uploadingType;
 
+  /// Optional hint telling the backend what kind of sign-in sheet is being
+  /// uploaded, so parsing can pick the right header row. 'other' sends nothing.
+  String sheetFormat = 'other';
+
+  static const sheetFormats = [
+    ('spreadsheet', 'Spreadsheet (Excel/CSV)'),
+    ('word', 'Word document'),
+    ('virtual_meeting', 'Virtual meeting export (Zoom/Teams)'),
+    ('other', 'Other / not sure'),
+  ];
+
   static const allTypes = [
     ('registration', 'Registration roster', Icons.how_to_reg_outlined, 'Names, emails, company, and license numbers'),
     ('attendance', 'Attendance / sign-in', Icons.fact_check_outlined, 'The final event attendance export'),
@@ -69,6 +80,11 @@ class _UploadsPageState extends State<UploadsPage> {
         '/events/${widget.event.id}/uploads/$type',
         file!.bytes!,
         file.name,
+        // Only the attendance / sign-in sheet has the format picker; leaving
+        // it on "Other / not sure" sends no hint, keeping default parsing.
+        fields: type == 'attendance' && sheetFormat != 'other'
+            ? {'sheet_format': sheetFormat}
+            : null,
       ) as Map<String, dynamic>;
       await load();
       if (mounted) _showUploadFeedback(type, response);
@@ -81,21 +97,36 @@ class _UploadsPageState extends State<UploadsPage> {
 
   /// Role-aware confirmation so nobody is left wondering whether the upload
   /// "took": presenters get told they're done, admins get pointed at review.
+  /// File-level parser notices (row 0) — "no attendee names could be read", a
+  /// sheet-format mismatch, OCR caveats — are spelled out instead of counted.
   void _showUploadFeedback(String type, Map<String, dynamic> response) {
     final rowCount = response['row_count'] ?? 0;
     final parseErrors = ((response['parse_errors'] as List?) ?? const []).cast<Map<String, dynamic>>();
-    final errorNote = parseErrors.isEmpty
+    final fileNotes = [
+      for (final entry in parseErrors)
+        if (entry['row'] == 0) entry['message'].toString(),
+    ];
+    final rowErrorCount = parseErrors.length - fileNotes.length;
+    final noAttendees = fileNotes.any((note) => note.startsWith('No attendee names'));
+    final noteText = fileNotes.isEmpty ? '' : ' ${fileNotes.join(' ')}';
+    final errorNote = rowErrorCount == 0
         ? ''
-        : ' ${parseErrors.length} ${parseErrors.length == 1 ? 'row' : 'rows'} could not be read — view details.';
+        : ' $rowErrorCount ${rowErrorCount == 1 ? 'row' : 'rows'} could not be read — view details.';
     if (!widget.session.user!.isAdmin) {
       showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          icon: const Icon(Icons.check_circle_outline, color: Color(0xFF248A52), size: 42),
-          title: const Text('Sign-in sheet received'),
+          icon: noAttendees
+              ? const Icon(Icons.warning_amber_outlined, color: Color(0xFFB54708), size: 42)
+              : const Icon(Icons.check_circle_outline, color: Color(0xFF248A52), size: 42),
+          title: Text(noAttendees ? 'Sign-in sheet needs attention' : 'Sign-in sheet received'),
           content: Text(
-            'Sign-in sheet received ($rowCount rows). The compliance team has been '
-            'notified — nothing else is needed from you.$errorNote',
+            noAttendees
+                ? 'Your file was uploaded, but no attendee names could be read from it. '
+                    'Pick the matching sheet format and upload it again, or convert the '
+                    'sheet to a spreadsheet (CSV/XLSX) with a "Name" column.$errorNote'
+                : 'Sign-in sheet received ($rowCount rows). The compliance team has been '
+                    'notified — nothing else is needed from you.$noteText$errorNote',
           ),
           actions: [
             if (parseErrors.isNotEmpty)
@@ -113,8 +144,11 @@ class _UploadsPageState extends State<UploadsPage> {
     } else {
       final label = allTypes.firstWhere((t) => t.$1 == type, orElse: () => allTypes[1]).$2;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('$label processed — $rowCount rows. Review compliance next.$errorNote'),
-        duration: const Duration(seconds: 6),
+        content: Text(
+          '$label processed — $rowCount rows.'
+          '${noAttendees ? '' : ' Review compliance next.'}$noteText$errorNote',
+        ),
+        duration: Duration(seconds: fileNotes.isEmpty ? 6 : 10),
         action: parseErrors.isEmpty
             ? null
             : SnackBarAction(label: 'View details', onPressed: () => _showParseErrors(parseErrors)),
@@ -137,9 +171,11 @@ class _UploadsPageState extends State<UploadsPage> {
             separatorBuilder: (context, index) => divider,
             itemBuilder: (_, index) {
               final entry = parseErrors[index];
+              // Row 0 marks a file-level notice, not a specific row.
+              final prefix = entry['row'] == 0 ? '' : 'Row ${entry['row']}: ';
               return Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Text('Row ${entry['row']}: ${entry['message']}', style: const TextStyle(fontSize: 13)),
+                child: Text('$prefix${entry['message']}', style: const TextStyle(fontSize: 13)),
               );
             },
           ),
@@ -147,6 +183,32 @@ class _UploadsPageState extends State<UploadsPage> {
         actions: [
           TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Close')),
         ],
+      ),
+    );
+  }
+
+  /// Sheet-format picker for the attendance / sign-in row: an optional hint
+  /// that helps the backend find the attendee table in the uploaded document.
+  Widget _formatSelector() {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 360),
+      child: DropdownButtonFormField<String>(
+        initialValue: sheetFormat,
+        isDense: true,
+        style: const TextStyle(fontSize: 13, color: Color(0xFF344054)),
+        decoration: const InputDecoration(
+          labelText: 'What kind of sheet is this? (optional)',
+          border: OutlineInputBorder(),
+          isDense: true,
+          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        ),
+        items: [
+          for (final format in sheetFormats)
+            DropdownMenuItem(value: format.$1, child: Text(format.$2)),
+        ],
+        onChanged: uploadingType != null
+            ? null
+            : (value) => setState(() => sheetFormat = value ?? 'other'),
       ),
     );
   }
@@ -224,6 +286,7 @@ class _UploadsPageState extends State<UploadsPage> {
                   onUpload: () => pickAndUpload(type.$1),
                   onOpen: latestFor(type.$1) == null ? null : () => openUpload(latestFor(type.$1)!),
                   onShowErrors: _showParseErrors,
+                  formatSelector: type.$1 == 'attendance' ? _formatSelector() : null,
                 ),
                 const SizedBox(height: 12),
               ],
@@ -259,6 +322,7 @@ class _UploadRow extends StatelessWidget {
     required this.onUpload,
     required this.onOpen,
     required this.onShowErrors,
+    this.formatSelector,
   });
 
   final String title;
@@ -267,6 +331,9 @@ class _UploadRow extends StatelessWidget {
   final Map<String, dynamic>? upload;
   final bool loading;
   final VoidCallback onUpload;
+
+  /// Optional sheet-format picker (attendance / sign-in sheet only).
+  final Widget? formatSelector;
 
   /// Downloads the original uploaded file; null while nothing is uploaded.
   final VoidCallback? onOpen;
@@ -298,6 +365,10 @@ class _UploadRow extends StatelessWidget {
                       Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
                       const SizedBox(height: 3),
                       Text(description, style: const TextStyle(color: Color(0xFF667085), fontSize: 13)),
+                      if (formatSelector != null) ...[
+                        const SizedBox(height: 12),
+                        formatSelector!,
+                      ],
                       if (upload != null) ...[
                         const SizedBox(height: 7),
                         Wrap(

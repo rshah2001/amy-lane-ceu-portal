@@ -73,10 +73,12 @@ class ApiClient {
   Future<dynamic> uploadFile(
     String path,
     Uint8List bytes,
-    String filename,
-  ) async {
+    String filename, {
+    Map<String, String>? fields,
+  }) async {
     final request = http.MultipartRequest('POST', Uri.parse('$baseUrl$path'));
     if (token != null) request.headers['Authorization'] = 'Bearer $token';
+    if (fields != null) request.fields.addAll(fields);
     request.files.add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
     return _decode(await http.Response.fromStream(await request.send()));
   }

@@ -35,6 +35,25 @@ ALIASES = {
     "completed_at": ["completed at", "completion date", "submitted at", "timestamp"],
 }
 
+# Sheet-format hints the uploader can optionally send with the file. "other"
+# (or no hint at all) keeps the default extension-based parsing untouched.
+SHEET_FORMAT_SUFFIXES = {
+    "spreadsheet": {".csv", ".xlsx"},
+    "word": {".docx"},
+    "virtual_meeting": {".csv", ".xlsx"},
+}
+SHEET_FORMAT_LABELS = {
+    "spreadsheet": "Spreadsheet (Excel/CSV)",
+    "word": "Word document",
+    "virtual_meeting": "Virtual meeting export (Zoom/Teams)",
+}
+SHEET_FORMATS = set(SHEET_FORMAT_SUFFIXES) | {"other"}
+
+NO_NAMES_MESSAGE = (
+    "No attendee names could be read from this file — check the sheet format "
+    'selection or convert it to a spreadsheet (CSV/XLSX) with a "Name" column.'
+)
+
 
 def _canonical_header(value: str) -> str:
     return " ".join(value.strip().lower().replace("_", " ").replace("-", " ").split())
@@ -198,11 +217,24 @@ def parse_csv_bytes(contents: bytes) -> list[dict[str, str]]:
     return list(reader)
 
 
-def _detect_header(rows: list[tuple]) -> int | None:
+def _detect_header(rows: list[tuple], prefer_virtual: bool = False) -> int | None:
     """Find the header row: the first row with >=2 labels that names a person or email.
 
     Skips leading title/summary rows (e.g. Microsoft Teams "1. Summary" blocks).
+    With `prefer_virtual` (the uploader said this is a Zoom/Teams export), first
+    look for the attendee table proper — a row naming both a person column and
+    an email/join-time column — so summary lines like "Meeting name" can't win.
     """
+    if prefer_virtual:
+        for index, row in enumerate(rows):
+            cells = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
+            if len(cells) < 2:
+                continue
+            canonical = [_canonical_header(cell) for cell in cells]
+            if any("name" in cell for cell in canonical) and any(
+                "email" in cell or "join time" in cell for cell in canonical
+            ):
+                return index
     for index, row in enumerate(rows):
         cells = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
         if len(cells) < 2:
@@ -240,14 +272,14 @@ def _xlsx_cell_value(cell) -> Any:
     return value
 
 
-def parse_xlsx_bytes(contents: bytes) -> list[dict[str, str]]:
+def parse_xlsx_bytes(contents: bytes, prefer_virtual: bool = False) -> list[dict[str, str]]:
     workbook = load_workbook(io.BytesIO(contents), read_only=True, data_only=True)
     # Real exports (e.g. Microsoft Teams) ship multiple sheets: a summary sheet
     # plus the attendee table. Choose the sheet whose header best identifies people.
     best: tuple[tuple[int, int, int], list[dict[str, str]]] | None = None
     for worksheet in workbook.worksheets:
         rows = [tuple(_xlsx_cell_value(cell) for cell in row) for row in worksheet.iter_rows()]
-        header_index = _detect_header(rows)
+        header_index = _detect_header(rows, prefer_virtual=prefer_virtual)
         if header_index is None:
             continue
         records = _records_from_rows(rows, header_index)
@@ -460,24 +492,63 @@ def parse_docx_bytes(contents: bytes) -> tuple[list[dict[str, str]], list[dict[s
     return records, warnings
 
 
-def parse_document_bytes(filename: str, contents: bytes) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+def _parse_virtual_csv(contents: bytes) -> list[dict[str, str]]:
+    """CSV parsing for virtual-meeting attendance exports.
+
+    Teams/Zoom reports often put summary lines above the real header, which the
+    default DictReader path would mistake for column names. Locate the actual
+    attendee header row first; if none looks virtual, fall back to the default.
+    """
+    text = _decode_csv(contents)
+    rows = [tuple(row) for row in csv.reader(io.StringIO(text))]
+    header_index = _detect_header(rows, prefer_virtual=True)
+    if header_index is None:
+        return parse_csv_bytes(contents)
+    return _records_from_rows(rows, header_index)
+
+
+def parse_document_bytes(
+    filename: str,
+    contents: bytes,
+    sheet_format: str | None = None,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     suffix = Path(filename).suffix.lower()
+    if sheet_format in (None, "", "other"):
+        sheet_format = None
+    warnings: list[dict[str, Any]] = []
+    if sheet_format is not None and suffix not in SHEET_FORMAT_SUFFIXES[sheet_format]:
+        # A wrong hint must never sink the upload: warn, then trust the file.
+        warnings.append(
+            {
+                "row": 0,
+                "message": (
+                    f'The selected sheet format "{SHEET_FORMAT_LABELS[sheet_format]}" does not '
+                    f"match the uploaded {suffix} file; the file was read based on its actual type."
+                ),
+            }
+        )
+        sheet_format = None
+    prefer_virtual = sheet_format == "virtual_meeting"
     if suffix == ".csv":
         try:
-            return parse_csv_bytes(contents), []
+            records = _parse_virtual_csv(contents) if prefer_virtual else parse_csv_bytes(contents)
+            return records, warnings
         except (csv.Error, UnicodeDecodeError) as exc:
             raise ValueError(f"Invalid CSV file: {exc}") from exc
     if suffix == ".xlsx":
         try:
-            return parse_xlsx_bytes(contents), []
+            return parse_xlsx_bytes(contents, prefer_virtual=prefer_virtual), warnings
         except (BadZipFile, InvalidFileException, OSError, ValueError) as exc:
             raise ValueError(f"Invalid XLSX file: {exc}") from exc
     if suffix in {".png", ".jpg", ".jpeg"}:
-        return parse_image_bytes(contents)
+        records, notes = parse_image_bytes(contents)
+        return records, warnings + notes
     if suffix == ".pdf":
-        return parse_pdf_bytes(contents)
+        records, notes = parse_pdf_bytes(contents)
+        return records, warnings + notes
     if suffix == ".docx":
-        return parse_docx_bytes(contents)
+        records, notes = parse_docx_bytes(contents)
+        return records, warnings + notes
     raise ValueError("Supported uploads are CSV, XLSX, PDF, DOCX, PNG, JPG, and JPEG")
 
 
@@ -536,6 +607,7 @@ def process_rows(
             delete(SurveyResult).where(SurveyResult.event_id == event_id, SurveyResult.source == "upload")
         )
 
+    names_found = 0
     for row_number, row in enumerate(rows, start=2):
         # Skip whitespace-only rows (common padding in hand-edited spreadsheets)
         # without disturbing the row numbers reported for later errors.
@@ -543,6 +615,7 @@ def process_rows(
             continue
         try:
             identity = _identity(row)
+            names_found += 1
             attendee = _get_or_create_attendee(db, identity)
             link = _get_or_create_link(db, event_id, attendee)
             if file_type == "registration":
@@ -581,6 +654,10 @@ def process_rows(
                 raise ValueError(f"Unsupported file type: {file_type}")
         except ValueError as exc:
             errors.append({"row": row_number, "message": str(exc)})
+    if names_found == 0:
+        # An upload that produced no attendees at all must say so explicitly
+        # instead of silently succeeding with an empty roster.
+        errors.append({"row": 0, "message": NO_NAMES_MESSAGE})
     recalculate_event(db, event_id)
     return len(rows), errors
 
@@ -591,8 +668,9 @@ def process_document(
     file_type: str,
     filename: str,
     contents: bytes,
+    sheet_format: str | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
-    rows, extraction_errors = parse_document_bytes(filename, contents)
+    rows, extraction_errors = parse_document_bytes(filename, contents, sheet_format=sheet_format)
     return process_rows(db, event_id, file_type, rows, extraction_errors)
 
 
