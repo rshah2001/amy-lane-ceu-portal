@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 
 class ORMModel(BaseModel):
@@ -227,19 +227,32 @@ class PublicSurveyOut(BaseModel):
 
 
 class PublicSurveySubmission(BaseModel):
-    full_name: str = Field(min_length=2, max_length=255)
-    email: EmailStr
+    # Surveys accept anonymous/blind feedback: every identity field is optional,
+    # but a name that IS provided must still look like one (min 2 chars).
+    business_location: str | None = Field(default=None, max_length=255)
+    full_name: str | None = Field(default=None, min_length=2, max_length=255)
+    email: EmailStr | None = None
     answers: dict[str, str]
+
+    @field_validator("business_location", "full_name", "email", mode="before")
+    @classmethod
+    def blank_to_none(cls, value: object) -> object:
+        """Treat blank/whitespace-only strings from the form as omitted."""
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
 
 class SurveyResponseRow(BaseModel):
     id: int
     event_id: int
     event_title: str
-    attendee_id: int
-    full_name: str
+    attendee_id: int | None
+    full_name: str | None
     email: str | None
     company: str | None
+    business_location: str | None
     completed_at: datetime | None
     answers: dict
 

@@ -24,6 +24,7 @@ class PublicSurveyPage extends StatefulWidget {
 
 class _PublicSurveyPageState extends State<PublicSurveyPage> {
   final formKey = GlobalKey<FormState>();
+  final businessLocation = TextEditingController();
   final name = TextEditingController();
   final email = TextEditingController();
   Map<String, dynamic>? survey;
@@ -76,9 +77,12 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
       error = null;
     });
     try {
+      // Identity fields are optional (anonymous feedback is allowed); blanks
+      // are sent as null so nothing empty is stored.
       await widget.api.post('/public/surveys/${widget.token}', {
-        'full_name': name.text.trim(),
-        'email': email.text.trim(),
+        'business_location': businessLocation.text.trim().isEmpty ? null : businessLocation.text.trim(),
+        'full_name': name.text.trim().isEmpty ? null : name.text.trim(),
+        'email': email.text.trim().isEmpty ? null : email.text.trim(),
         'answers': filledAnswers,
       });
       if (mounted) setState(() => submitted = true);
@@ -137,12 +141,24 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
                                     ),
                                     const SizedBox(height: 24),
                                     TextFormField(
+                                      controller: businessLocation,
+                                      textCapitalization: TextCapitalization.words,
+                                      textInputAction: TextInputAction.next,
+                                      decoration: const InputDecoration(labelText: 'Business Name / Location (optional)'),
+                                    ),
+                                    const SizedBox(height: 14),
+                                    TextFormField(
                                       controller: name,
                                       autofillHints: const [AutofillHints.name],
                                       textCapitalization: TextCapitalization.words,
                                       textInputAction: TextInputAction.next,
-                                      decoration: const InputDecoration(labelText: 'Full name'),
-                                      validator: (value) => value == null || value.trim().length < 2 ? 'Enter your name' : null,
+                                      decoration: const InputDecoration(labelText: 'Full name (optional)'),
+                                      // Blank is fine (anonymous feedback); a provided name
+                                      // must still be at least 2 characters.
+                                      validator: (value) {
+                                        final text = value?.trim() ?? '';
+                                        return text.isEmpty || text.length >= 2 ? null : 'Enter your name';
+                                      },
                                     ),
                                     const SizedBox(height: 14),
                                     TextFormField(
@@ -150,8 +166,8 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
                                       keyboardType: TextInputType.emailAddress,
                                       autofillHints: const [AutofillHints.email],
                                       textInputAction: TextInputAction.next,
-                                      decoration: const InputDecoration(labelText: 'Email address'),
-                                      validator: emailValidator,
+                                      decoration: const InputDecoration(labelText: 'Email address (optional)'),
+                                      validator: optionalEmailValidator,
                                     ),
                                     const SizedBox(height: 18),
                                     const Text(

@@ -74,16 +74,29 @@ def submit_public_survey(
                 status_code=422,
                 detail="One of the answers is not a valid option for its question.",
             )
-    attendee = match_or_create_attendee(db, payload.full_name, str(payload.email))
-    link = get_or_create_link(db, event.id, attendee.id)
+    # Name and email are both optional: with neither, the response is stored
+    # anonymously (no attendee linked); with either one, we match/create an
+    # attendee from whatever identity was given, as before.
+    attendee = None
+    if payload.full_name or payload.email:
+        attendee = match_or_create_attendee(
+            db, payload.full_name or "", str(payload.email) if payload.email else None
+        )
     # Every submission is kept as its own row: the same attendee may answer
     # more than once and admins want to see all responses, not just the last.
-    result = SurveyResult(event_id=event.id, attendee_id=attendee.id, source="web")
+    result = SurveyResult(
+        event_id=event.id,
+        attendee_id=attendee.id if attendee else None,
+        business_location=payload.business_location,
+        source="web",
+    )
     db.add(result)
     result.completed = True
     result.completed_at = datetime.now(timezone.utc)
     result.raw_payload = payload.answers
-    link.survey_completed = True
+    if attendee:
+        link = get_or_create_link(db, event.id, attendee.id)
+        link.survey_completed = True
     db.flush()
     recalculate_event(db, event.id)
     record_audit(
@@ -93,7 +106,7 @@ def submit_public_survey(
         result.id,
         None,
         event.id,
-        {"attendee_id": attendee.id},
+        {"attendee_id": attendee.id if attendee else None},
     )
     db.commit()
     return {"status": "submitted"}
@@ -120,9 +133,10 @@ def survey_qr(
 
 
 def _response_query(db: Session, event_id: int | None, attendee_id: int | None, search: str | None):
+    # Outer join: anonymous submissions have no attendee row.
     query = (
         select(SurveyResult, Attendee, TrainingEvent)
-        .join(Attendee, SurveyResult.attendee_id == Attendee.id)
+        .outerjoin(Attendee, SurveyResult.attendee_id == Attendee.id)
         .join(TrainingEvent, SurveyResult.event_id == TrainingEvent.id)
         .where(SurveyResult.completed.is_(True))
         .order_by(SurveyResult.completed_at.desc())
@@ -151,10 +165,11 @@ def list_survey_responses(
             id=result.id,
             event_id=result.event_id,
             event_title=event.title,
-            attendee_id=attendee.id,
-            full_name=attendee.full_name,
-            email=attendee.email,
-            company=attendee.company,
+            attendee_id=attendee.id if attendee else None,
+            full_name=attendee.full_name if attendee else None,
+            email=attendee.email if attendee else None,
+            company=attendee.company if attendee else None,
+            business_location=result.business_location,
             completed_at=result.completed_at,
             answers=result.raw_payload or {},
         )
@@ -188,7 +203,7 @@ def export_survey_responses(
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
-        ["Event", "Attendee", "Email", "Company", "Completed at"]
+        ["Event", "Attendee", "Email", "Company", "Business Name / Location", "Completed at"]
         + [label_for.get(qid, qid) for qid in question_keys]
     )
     for result, attendee, event in rows:
@@ -196,9 +211,10 @@ def export_survey_responses(
         writer.writerow(
             [
                 event.title,
-                attendee.full_name,
-                attendee.email or "",
-                attendee.company or "",
+                attendee.full_name if attendee else "Anonymous",
+                (attendee.email if attendee else None) or "",
+                (attendee.company if attendee else None) or "",
+                result.business_location or "",
                 result.completed_at.isoformat() if result.completed_at else "",
             ]
             + [str(answers.get(qid, "")) for qid in question_keys]

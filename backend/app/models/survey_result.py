@@ -11,7 +11,10 @@ class SurveyResult(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("training_events.id", ondelete="CASCADE"), index=True)
-    attendee_id: Mapped[int] = mapped_column(ForeignKey("attendees.id"))
+    # Nullable: public surveys may be submitted anonymously (no name/email).
+    attendee_id: Mapped[int | None] = mapped_column(ForeignKey("attendees.id"))
+    # Optional free-text "Business Name / Location" captured on the public form.
+    business_location: Mapped[str | None] = mapped_column(String(255))
     completed: Mapped[bool] = mapped_column(Boolean, default=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw_payload: Mapped[dict] = mapped_column(JSON, default=dict)

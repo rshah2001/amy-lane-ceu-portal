@@ -212,6 +212,14 @@ String? emailValidator(String? value) {
   return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(text) ? null : 'Enter a valid email address';
 }
 
+/// Validator for an optional email field (valid when left blank, but a
+/// non-blank value must still look like an email address).
+String? optionalEmailValidator(String? value) {
+  final text = value?.trim() ?? '';
+  if (text.isEmpty) return null;
+  return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(text) ? null : 'Enter a valid email address';
+}
+
 /// Validator for an optional http(s) URL field (valid when left blank).
 String? optionalUrlValidator(String? value) {
   final text = value?.trim() ?? '';

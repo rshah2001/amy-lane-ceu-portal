@@ -3,10 +3,10 @@ the same attendee (same email) submits more than once."""
 from helpers_api import create_event, upload_csv
 
 
-def submit(client, token, answers, full_name="Sam Lee", email="sam.lee@example.com"):
+def submit(client, token, answers, full_name="Sam Lee", email="sam.lee@example.com", **extra):
     return client.post(
         f"/api/public/surveys/{token}",
-        json={"full_name": full_name, "email": email, "answers": answers},
+        json={"full_name": full_name, "email": email, "answers": answers, **extra},
     )
 
 
@@ -38,6 +38,119 @@ class TestSurveySubmission:
         assert {row["email"] for row in rows} == {"sam.lee@example.com"}
         answers = {row["answers"]["liked"] for row in rows}
         assert answers == {"First response", "Second response"}
+
+    def test_named_submission_links_attendee_and_stores_location(self, client, admin):
+        event = create_event(client, admin.headers)
+        response = submit(
+            client,
+            event["survey_token"],
+            {"liked": "Great pacing"},
+            business_location="Mobility Works - Orlando",
+        )
+        assert response.status_code == 200, response.text
+
+        rows = client.get(
+            f"/api/survey-responses?event_id={event['id']}", headers=admin.headers
+        ).json()
+        assert len(rows) == 1
+        assert rows[0]["attendee_id"] is not None
+        assert rows[0]["full_name"] == "Sam Lee"
+        assert rows[0]["email"] == "sam.lee@example.com"
+        assert rows[0]["business_location"] == "Mobility Works - Orlando"
+
+        compliance = client.get(
+            f"/api/events/{event['id']}/compliance", headers=admin.headers
+        ).json()
+        flags = {row["email"]: row["survey_completed"] for row in compliance}
+        assert flags["sam.lee@example.com"] is True
+
+    def test_anonymous_submission_without_name_or_email(self, client, admin):
+        event = create_event(client, admin.headers)
+        response = submit(
+            client, event["survey_token"], {"liked": "Blind feedback"}, full_name=None, email=None
+        )
+        assert response.status_code == 200, response.text
+
+        rows = client.get(
+            f"/api/survey-responses?event_id={event['id']}", headers=admin.headers
+        ).json()
+        assert len(rows) == 1
+        assert rows[0]["attendee_id"] is None
+        assert rows[0]["full_name"] is None
+        assert rows[0]["email"] is None
+        assert rows[0]["answers"] == {"liked": "Blind feedback"}
+        # No attendee record is created for anonymous feedback.
+        compliance = client.get(
+            f"/api/events/{event['id']}/compliance", headers=admin.headers
+        ).json()
+        assert compliance == []
+
+    def test_blank_strings_are_treated_as_anonymous(self, client, admin):
+        event = create_event(client, admin.headers)
+        response = submit(
+            client, event["survey_token"], {"liked": "Blank identity"}, full_name="  ", email=""
+        )
+        assert response.status_code == 200, response.text
+        rows = client.get(
+            f"/api/survey-responses?event_id={event['id']}", headers=admin.headers
+        ).json()
+        assert rows[0]["attendee_id"] is None
+
+    def test_submission_with_only_business_location(self, client, admin):
+        event = create_event(client, admin.headers)
+        response = submit(
+            client,
+            event["survey_token"],
+            {"liked": "Nice venue"},
+            full_name=None,
+            email=None,
+            business_location="Superior Van & Mobility, Louisville KY",
+        )
+        assert response.status_code == 200, response.text
+
+        rows = client.get(
+            f"/api/survey-responses?event_id={event['id']}", headers=admin.headers
+        ).json()
+        assert len(rows) == 1
+        assert rows[0]["attendee_id"] is None
+        assert rows[0]["business_location"] == "Superior Van & Mobility, Louisville KY"
+
+    def test_name_only_submission_still_creates_attendee(self, client, admin):
+        event = create_event(client, admin.headers)
+        response = submit(client, event["survey_token"], {"liked": "Solid"}, email=None)
+        assert response.status_code == 200, response.text
+        rows = client.get(
+            f"/api/survey-responses?event_id={event['id']}", headers=admin.headers
+        ).json()
+        assert rows[0]["attendee_id"] is not None
+        assert rows[0]["full_name"] == "Sam Lee"
+        assert rows[0]["email"] is None
+
+    def test_provided_name_must_still_be_two_characters(self, client, admin):
+        event = create_event(client, admin.headers)
+        response = submit(client, event["survey_token"], {"liked": "x"}, full_name="A")
+        assert response.status_code == 422, response.text
+
+    def test_csv_export_includes_business_location_and_anonymous_rows(self, client, admin):
+        event = create_event(client, admin.headers)
+        submit(
+            client,
+            event["survey_token"],
+            {"liked": "Great pacing"},
+            business_location="Mobility Works - Orlando",
+        )
+        submit(client, event["survey_token"], {"liked": "Blind feedback"}, full_name=None, email=None)
+
+        response = client.get(
+            f"/api/survey-responses.csv?event_id={event['id']}", headers=admin.headers
+        )
+        assert response.status_code == 200, response.text
+        lines = response.text.strip().splitlines()
+        header = lines[0]
+        assert "Business Name / Location" in header
+        body = "\n".join(lines[1:])
+        assert "Mobility Works - Orlando" in body
+        assert "Anonymous" in body
 
     def test_unknown_token_returns_404(self, client):
         response = submit(client, "not-a-real-token", {"liked": "n/a"})
