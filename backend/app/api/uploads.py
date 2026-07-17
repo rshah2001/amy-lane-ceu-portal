@@ -2,7 +2,7 @@ from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,7 +16,7 @@ from app.models.user import User
 from app.schemas.common import UploadedFileOut
 from app.services.audit import record_audit
 from app.services import storage
-from app.services.csv_import import process_document, save_upload
+from app.services.csv_import import SHEET_FORMATS, process_document, save_upload
 from app.services.notifications import notify_admins
 
 router = APIRouter(prefix="/events/{event_id}/uploads", tags=["Uploads"])
@@ -109,12 +109,16 @@ async def upload_document(
     event_id: int,
     file_type: str,
     file: UploadFile = File(...),
+    sheet_format: str | None = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> UploadedFile:
     event = get_visible_event(db, event_id, current_user)
     if file_type not in FILE_TYPES:
         raise HTTPException(status_code=400, detail="Invalid file type")
+    # Optional hint describing what kind of sheet this is; steers parsing.
+    if sheet_format and sheet_format not in SHEET_FORMATS:
+        raise HTTPException(status_code=400, detail="Invalid sheet format")
     if current_user.role != "admin" and file_type != "attendance":
         raise HTTPException(
             status_code=403,
@@ -135,7 +139,9 @@ async def upload_document(
     destination = settings.uploads_dir / str(event_id) / f"{uuid4().hex}-{Path(file.filename).name}"
     save_upload(contents, destination)
     try:
-        row_count, errors = process_document(db, event_id, file_type, file.filename, contents)
+        row_count, errors = process_document(
+            db, event_id, file_type, file.filename, contents, sheet_format=sheet_format
+        )
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"Unable to extract rows: {exc}") from exc
     uploaded = UploadedFile(
@@ -158,7 +164,13 @@ async def upload_document(
         uploaded.id,
         current_user,
         event_id,
-        {"file_type": file_type, "filename": file.filename, "rows": row_count, "errors": len(errors)},
+        {
+            "file_type": file_type,
+            "filename": file.filename,
+            "rows": row_count,
+            "errors": len(errors),
+            **({"sheet_format": sheet_format} if sheet_format else {}),
+        },
     )
     # Alert admins when a presenter submits the sign-in sheet so they can finish
     # the certificate workflow (dashboard notification + email).

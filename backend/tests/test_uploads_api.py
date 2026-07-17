@@ -368,6 +368,179 @@ class TestUploadIngestion:
         assert len(response.json()) == 2
 
 
+TEAMS_STYLE_CSV = (
+    "1. Summary,,,,,\n"
+    "Meeting title,CEU Training,,,,\n"
+    "Attended participants,2,,,,\n"
+    ",,,,,\n"
+    "2. Participants,,,,,\n"
+    "Name,Join time,Leave time,Duration,Email,Role\n"
+    "Alice Nguyen,6/15/26 10:00,6/15/26 11:00,1h,alice.nguyen@example.com,Attendee\n"
+    "Bob Ramos,6/15/26 10:05,6/15/26 11:00,55m,bob.ramos@example.com,Attendee\n"
+)
+
+
+class TestSheetFormatHint:
+    """The optional `sheet_format` form field steers/validates parsing."""
+
+    def test_virtual_hint_reads_teams_csv_with_summary_rows(self, client, admin, event):
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "attendance",
+            TEAMS_STYLE_CSV,
+            filename="teams-attendance.csv",
+            sheet_format="virtual_meeting",
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["row_count"] == 2
+        assert body["parse_errors"] == []
+        rows = compliance_rows_by_name(client, admin.headers, event["id"])
+        assert set(rows) == {"Alice Nguyen", "Bob Ramos"}
+        assert rows["Alice Nguyen"]["attended"] is True
+
+    def test_same_teams_csv_without_hint_reports_no_names(self, client, admin, event):
+        # Without the hint the summary line is taken as the header, so no names
+        # are found — the response must say so instead of silently succeeding.
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "attendance",
+            TEAMS_STYLE_CSV,
+            filename="teams-attendance.csv",
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["parse_status"] == "processed_with_errors"
+        assert any(
+            "No attendee names could be read" in error["message"]
+            for error in body["parse_errors"]
+        )
+
+    def test_virtual_hint_steers_xlsx_header_detection(self, client, admin, event):
+        # The summary line "Meeting name" would win default header detection
+        # (it names a "name"); the virtual hint demands an email/join-time too.
+        content = xlsx_bytes(
+            [
+                ["Meeting name", "Weekly CEU"],
+                ["Name", "Join time", "Leave time", "Duration", "Email", "Role"],
+                ["Iris Stone", "10:00", "11:00", "60", "iris.stone@example.com", "Attendee"],
+            ]
+        )
+        response = upload_document(
+            client,
+            admin.headers,
+            event["id"],
+            "attendance",
+            "teams.xlsx",
+            content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            sheet_format="virtual_meeting",
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["row_count"] == 1
+        assert body["parse_errors"] == []
+        rows = compliance_rows_by_name(client, admin.headers, event["id"])
+        assert rows["Iris Stone"]["attended"] is True
+
+    def test_mismatched_hint_warns_but_still_parses(self, client, admin, event):
+        # "Word document" hint on a CSV: warn clearly, then trust the file.
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "attendance",
+            SIMPLE_CSV,
+            sheet_format="word",
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["row_count"] == 2
+        assert body["parse_status"] == "processed_with_errors"
+        assert any("does not match" in error["message"] for error in body["parse_errors"])
+        rows = compliance_rows_by_name(client, admin.headers, event["id"])
+        assert set(rows) == {"Alice Nguyen", "Bob Ramos"}
+
+    def test_matching_hint_keeps_default_parsing(self, client, admin, event):
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "attendance",
+            SIMPLE_CSV,
+            sheet_format="spreadsheet",
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["row_count"] == 2
+        assert body["parse_errors"] == []
+
+    def test_other_hint_is_a_noop(self, client, admin, event):
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "attendance",
+            SIMPLE_CSV,
+            sheet_format="other",
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["parse_errors"] == []
+
+    def test_invalid_sheet_format_returns_400(self, client, admin, event):
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "attendance",
+            SIMPLE_CSV,
+            sheet_format="carrier_pigeon",
+        )
+        assert response.status_code == 400, response.text
+
+
+class TestZeroNamesFeedback:
+    def test_header_only_csv_reports_no_names(self, client, admin, event):
+        response = upload_csv(
+            client, admin.headers, event["id"], "attendance", "Full Name,Email\n"
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["row_count"] == 0
+        assert body["parse_status"] == "processed_with_errors"
+        assert any(
+            "No attendee names could be read" in error["message"]
+            for error in body["parse_errors"]
+        )
+
+    def test_csv_without_name_column_reports_no_names(self, client, admin, event):
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "attendance",
+            "Widget,Count\nBolt,2\nNut,7\n",
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["parse_status"] == "processed_with_errors"
+        assert any(
+            "No attendee names could be read" in error["message"]
+            for error in body["parse_errors"]
+        )
+
+    def test_upload_with_names_has_no_zero_names_message(self, client, admin, event):
+        response = upload_csv(
+            client, admin.headers, event["id"], "attendance", SIMPLE_CSV
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["parse_errors"] == []
+
+
 class TestPostTestScoreFormats:
     """Presenters upload scores as percentages, fractions, or out of 10."""
 

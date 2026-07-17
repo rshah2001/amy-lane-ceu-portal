@@ -21,18 +21,21 @@ def create_event(client, headers, **overrides) -> dict:
     return response.json()
 
 
-def upload_document(client, headers, event_id, file_type, filename, content, content_type):
+def upload_document(client, headers, event_id, file_type, filename, content, content_type, sheet_format=None):
     if isinstance(content, str):
         content = content.encode()
     return client.post(
         f"/api/events/{event_id}/uploads/{file_type}",
         headers=headers,
         files={"file": (filename, content, content_type)},
+        data={"sheet_format": sheet_format} if sheet_format else None,
     )
 
 
-def upload_csv(client, headers, event_id, file_type, csv_text, filename="rows.csv"):
-    return upload_document(client, headers, event_id, file_type, filename, csv_text, "text/csv")
+def upload_csv(client, headers, event_id, file_type, csv_text, filename="rows.csv", sheet_format=None):
+    return upload_document(
+        client, headers, event_id, file_type, filename, csv_text, "text/csv", sheet_format=sheet_format
+    )
 
 
 def xlsx_bytes(rows: list[list]) -> bytes:
