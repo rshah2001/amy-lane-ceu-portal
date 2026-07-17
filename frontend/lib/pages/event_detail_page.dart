@@ -526,6 +526,8 @@ class _SummaryStrip extends StatelessWidget {
   final int eventId;
   final VoidCallback onOpenCompliance;
 
+  bool get isAdmin => session.user!.isAdmin;
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<dynamic>(
@@ -574,7 +576,9 @@ class _SummaryStrip extends StatelessWidget {
               runSpacing: 16,
               children: [
                 for (final item in items)
-                  if (item.$3)
+                  // Compliance review is admin-only, so only admins get the
+                  // tappable shortcut into it.
+                  if (item.$3 && isAdmin)
                     Tooltip(
                       message: 'Open compliance review',
                       child: InkWell(

@@ -110,7 +110,9 @@ GoRouter buildRouter(SessionController session) {
       // Admin-only sections: keep presenters out even via a typed/shared URL.
       const adminOnly = ['/create', '/certificates', '/reports', '/users', '/survey-responses', '/notifications', '/system'];
       if (!session.user!.isAdmin &&
-          (adminOnly.any((p) => state.matchedLocation.startsWith(p)) || state.matchedLocation.endsWith('/edit'))) {
+          (adminOnly.any((p) => state.matchedLocation.startsWith(p)) ||
+              state.matchedLocation.endsWith('/edit') ||
+              state.matchedLocation.endsWith('/compliance'))) {
         return '/dashboard';
       }
       return null;

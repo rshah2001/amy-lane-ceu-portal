@@ -136,21 +136,24 @@ class TestApproval:
 
 
 class TestComplianceScoping:
-    def test_presenter_sees_compliance_only_for_assigned_event(
+    def test_presenter_cannot_view_compliance_for_unassigned_event(
         self, client, admin, presenter, event, rows
     ):
-        # Not assigned to this event: hidden entirely.
         response = client.get(
             f"/api/events/{event['id']}/compliance", headers=presenter.headers
         )
-        assert response.status_code == 404, response.text
+        assert response.status_code == 403, response.text
 
-    def test_assigned_presenter_can_view_compliance(
+    def test_presenter_cannot_view_compliance_even_for_assigned_event(
         self, client, admin, presenter
     ):
+        # Compliance review is admin-only: presenters upload documents but never
+        # see per-attendee eligibility, scores, or approval state.
         assigned = create_event(
             client, admin.headers, assigned_presenter_id=presenter.id
         )
         upload_standard_roster(client, admin.headers, assigned["id"])
-        rows = compliance_rows_by_name(client, presenter.headers, assigned["id"])
-        assert "Alice Nguyen" in rows
+        response = client.get(
+            f"/api/events/{assigned['id']}/compliance", headers=presenter.headers
+        )
+        assert response.status_code == 403, response.text
