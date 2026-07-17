@@ -167,9 +167,13 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
 }
 
 /// Identity of a submitter within one event, for spotting repeat submissions.
-String _personEventKey(Map<String, dynamic> response) =>
-    '${(response['email'] ?? response['full_name'] ?? '').toString().trim().toLowerCase()}'
-    '|${response['event_id'] ?? response['event_title']}';
+String _personEventKey(Map<String, dynamic> response) {
+  final identity = (response['email'] ?? response['full_name'] ?? '').toString().trim().toLowerCase();
+  // Anonymous submissions carry no identity; key them by row id so unrelated
+  // anonymous responses are never flagged as repeats from one person.
+  if (identity.isEmpty) return 'anonymous|${response['id']}';
+  return '$identity|${response['event_id'] ?? response['event_title']}';
+}
 
 class _ResponseTile extends StatelessWidget {
   const _ResponseTile({required this.response, this.submissionCount = 1});
@@ -182,12 +186,18 @@ class _ResponseTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final answers = (response['answers'] as Map?)?.cast<String, dynamic>() ?? {};
     final completed = DateTime.tryParse(response['completed_at']?.toString() ?? '')?.toLocal();
+    final businessLocation = (response['business_location'] as String?)?.trim() ?? '';
     return ExpansionTile(
       shape: const Border(),
       collapsedShape: const Border(),
       title: Row(
         children: [
-          Flexible(child: Text(response['full_name'] as String, style: const TextStyle(fontWeight: FontWeight.w600))),
+          Flexible(
+            child: Text(
+              response['full_name'] as String? ?? 'Anonymous',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
           if (submissionCount > 1) ...[
             const SizedBox(width: 8),
             StatusBadge('$submissionCount SUBMISSIONS', tone: BadgeTone.warning),
@@ -196,6 +206,7 @@ class _ResponseTile extends StatelessWidget {
       ),
       subtitle: Text(
         '${response['event_title']}  ·  ${response['email'] ?? 'no email'}'
+        '${businessLocation.isEmpty ? '' : '  ·  $businessLocation'}'
         '${completed == null ? '' : '  ·  ${DateFormat.yMMMd().format(completed)} · ${DateFormat.jm().format(completed)}'}',
         style: const TextStyle(fontSize: 12, color: Color(0xFF667085)),
       ),

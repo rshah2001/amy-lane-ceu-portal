@@ -476,8 +476,12 @@ def process_rows(
             delete(TestResult).where(TestResult.event_id == event_id, TestResult.source == "upload")
         )
     elif file_type == "survey":
+        # Anonymous web submissions have a NULL attendee_id; a NULL inside the
+        # NOT IN subquery would make it match nothing, wiping everyone's flag.
         web_survey_attendees = select(SurveyResult.attendee_id).where(
-            SurveyResult.event_id == event_id, SurveyResult.source == "web"
+            SurveyResult.event_id == event_id,
+            SurveyResult.source == "web",
+            SurveyResult.attendee_id.is_not(None),
         )
         db.execute(
             update(EventAttendee)
