@@ -10,6 +10,7 @@ from app.db.session import get_db
 from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
 from app.schemas.common import VerificationOut
+from app.services import storage
 from app.services.audit import record_audit
 from app.services.certificates import generate_certificate_pdf
 from app.services.compliance import lifecycle_status
@@ -56,8 +57,9 @@ def download_verified_certificate(
     if not certificate:
         raise HTTPException(status_code=404, detail="Certificate not found")
     path = Path(certificate.pdf_path)
-    if not path.exists():
-        # Ephemeral-disk safe: re-create the PDF from its immutable data.
+    if not storage.ensure_local(path):
+        # Not in the storage backend either: re-create the PDF from its
+        # immutable data (ephemeral-disk safe).
         generate_certificate_pdf(certificate.event_attendee, certificate.certificate_number, output_path=path)
     # First public fetch marks the certificate as downloaded (truthful lifecycle).
     if not certificate.downloaded_at:

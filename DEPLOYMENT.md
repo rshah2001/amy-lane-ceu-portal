@@ -67,16 +67,35 @@ her own admin from the Users page.
 
 ---
 
-## Storage caveat (important)
-File bytes (uploaded rosters/sign-in sheets, OCR images, generated certificate PDFs) are
-written to `/app/storage` on the Render instance, whose disk is **ephemeral on the free
-tier** — files reset on each deploy/restart. Certificate **metadata** (number, status,
-recipient, audit) lives durably in Postgres, and certs can be regenerated, so this is fine
-for a short demo. For durable file storage you have two clean options at the secured tier:
-- **Render paid disk** (simplest — persistent volume mounted at `/app/storage`), or
-- **Supabase Storage** (object store; requires routing certificate template + PDF read/write
-  through a storage adapter and serving via signed URLs — a follow-up task, validated against
-  the real Supabase project).
+## File storage — Supabase Storage (recommended) or local disk
+The backend stores file bytes (uploaded rosters/sign-in sheets, OCR images, certificate
+templates, generated certificate PDFs) through a storage abstraction
+(`backend/app/services/storage.py`) with two backends:
+
+- **Supabase Storage** (durable, recommended for any hosted deploy) — used when all three
+  env vars below are set. Files live in a Supabase bucket; the local `/app/storage` disk is
+  only a serving cache and is transparently re-hydrated from the bucket after an
+  ephemeral-disk restart.
+- **Local disk** (dev fallback) — used when the env vars are unset. Files are written under
+  `STORAGE_DIR` exactly as before; on Render's free tier that disk is **ephemeral**, so
+  original uploads are lost on redeploy (certificate PDFs can still be regenerated from
+  their immutable DB snapshots).
+
+To enable Supabase Storage:
+1. In the Supabase project (same one as the database, or a separate one): **Storage →
+   New bucket**. Name it (e.g. `ceu-files`) and leave **"Public bucket" OFF**.
+   ⚠ **The bucket must be private** — it holds attendee PII and certificates (protected
+   info under the compliance requirements). Files are served only through the API's
+   authenticated endpoints using the service-role key; there are no public bucket URLs.
+2. Set these env vars on the backend (Render → Environment):
+   - `SUPABASE_URL` — the project URL, e.g. `https://<ref>.supabase.co`
+     (Project Settings → API).
+   - `SUPABASE_SERVICE_ROLE_KEY` — the **service_role** secret key (Project Settings →
+     API). Treat it like a DB password; backend-only, never in the frontend.
+   - `SUPABASE_STORAGE_BUCKET` — the bucket name from step 1, e.g. `ceu-files`.
+3. Redeploy. No migration is needed: object keys mirror the on-disk layout
+   (`uploads/<event_id>/…`, `certificates/…`), and any file missing from the bucket
+   (pre-existing certs) is regenerated or re-uploaded on next write.
 
 ## Moving to a secured tier (before real PII)
 - Paid Render (no sleep, persistent disk) or a VPS with encrypted disk + backups.

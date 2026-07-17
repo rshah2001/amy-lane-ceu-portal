@@ -1,4 +1,3 @@
-import shutil
 from collections import Counter
 from datetime import date
 from decimal import Decimal
@@ -10,7 +9,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_admin
-from app.core.config import settings
 from app.db.session import get_db
 from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
@@ -26,6 +24,7 @@ from app.schemas.common import (
     EventSummary,
     EventUpdate,
 )
+from app.services import storage
 from app.services.audit import record_audit
 from app.services.survey_template import get_survey_template
 
@@ -288,11 +287,12 @@ def delete_event(
     db.flush()
     db.delete(event)
     db.commit()
-    # Best-effort disk cleanup after the transaction commits.
+    # Best-effort file cleanup after the transaction commits (local disk and,
+    # when configured, the Supabase Storage bucket).
     for raw_path in pdf_paths:
-        Path(raw_path).unlink(missing_ok=True)
-    shutil.rmtree(settings.uploads_dir / str(event_id), ignore_errors=True)
-    shutil.rmtree(settings.certificates_dir / "templates" / str(event_id), ignore_errors=True)
+        storage.delete_file(Path(raw_path))
+    storage.delete_prefix(f"uploads/{event_id}")
+    storage.delete_prefix(f"certificates/templates/{event_id}")
     return Response(status_code=204)
 
 

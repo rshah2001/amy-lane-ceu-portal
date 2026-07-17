@@ -17,6 +17,7 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.attendee import Attendee
+from app.services import storage
 from app.models.event_attendee import EventAttendee
 from app.models.survey_result import SurveyResult
 from app.models.test_result import TestResult
@@ -606,5 +607,7 @@ def process_csv(
 
 
 def save_upload(contents: bytes, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(contents)
+    # Routed through the storage abstraction: Supabase Storage when configured,
+    # plain local disk otherwise. Raises StorageError if a remote write fails —
+    # original uploads cannot be regenerated, so the request must fail loudly.
+    storage.save_bytes(destination, contents)

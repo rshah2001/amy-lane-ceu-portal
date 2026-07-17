@@ -22,6 +22,7 @@ from app.services.certificates import certificate_snapshot, generate_certificate
 from app.services.compliance import recalculate_event
 from app.services.csv_import import save_upload
 from app.services.emailer import send_certificate_email
+from app.services import storage
 
 router = APIRouter(prefix="/events/{event_id}/certificates", tags=["Certificates"])
 TEMPLATE_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg"}
@@ -44,10 +45,11 @@ def get_link(db: Session, event_id: int, link_id: int) -> EventAttendee:
 
 def ensure_pdf(link: EventAttendee, certificate: Certificate) -> Path:
     # The free-tier host has an ephemeral disk, so a generated cert PDF can
-    # disappear on redeploy while its DB row persists. Re-create it from the
-    # same immutable data (identical output) on demand so send/download work.
+    # disappear on redeploy while its DB row persists. First try to restore it
+    # from the storage backend (Supabase, when configured); otherwise re-create
+    # it from the same immutable data (identical output) so send/download work.
     path = Path(certificate.pdf_path)
-    if not path.exists():
+    if not storage.ensure_local(path):
         generate_certificate_pdf(link, certificate.certificate_number, output_path=path)
     return path
 

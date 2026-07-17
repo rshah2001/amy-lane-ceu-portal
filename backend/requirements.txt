@@ -8,6 +8,8 @@ passlib[bcrypt]==1.7.4
 bcrypt==3.2.2
 python-multipart==0.0.19
 pydantic-settings==2.6.1
+# Supabase Storage REST client (app/services/storage.py); also used by Starlette's TestClient.
+httpx==0.28.1
 email-validator==2.2.0
 reportlab==4.2.5
 pypdf==5.1.0

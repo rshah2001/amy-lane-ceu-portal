@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     # environment; parsed into a list by the `cors_origins` property below.
     backend_cors_origins: str = "http://localhost:5173"
     storage_dir: Path = Path("storage")
+    # Supabase Storage (durable object storage for uploads + certificate PDFs).
+    # When all three are set, files are stored in the Supabase bucket (with the
+    # local disk as a serving cache); otherwise plain local-disk storage is used.
+    # The bucket MUST be private — it holds attendee PII and certificates, which
+    # are only served through this API's authenticated endpoints.
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
+    supabase_storage_bucket: str | None = None
     certificate_issuer_name: str = "Continuing Education Compliance Team"
     email_delivery_mode: str = "log"
     smtp_host: str | None = None
