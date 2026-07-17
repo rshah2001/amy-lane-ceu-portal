@@ -243,7 +243,7 @@ def issue_certificate_manually(
     bypassing the eligibility rules. The person is added to the event (if not
     already on it), approved, and the manual issue is audited."""
     event = get_visible_event(db, event_id, current_user)
-    attendee = match_or_create_attendee(db, payload.full_name, str(payload.email))
+    attendee = match_or_create_attendee(db, event.id, payload.full_name, str(payload.email))
     link = get_or_create_link(db, event.id, attendee.id)
     if not link.approved:
         link.approved = True

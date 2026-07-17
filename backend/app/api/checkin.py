@@ -48,7 +48,7 @@ def submit_checkin(
     """Self-service attendance: an attendee scans the QR (or opens the link) and
     records their own attendance — works for online or in-person events."""
     event = get_checkin_event(db, token)
-    attendee = match_or_create_attendee(db, payload.full_name, str(payload.email))
+    attendee = match_or_create_attendee(db, event.id, payload.full_name, str(payload.email))
     link = get_or_create_link(db, event.id, attendee.id)
     link.registered = True
     link.attended = True

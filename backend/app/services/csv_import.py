@@ -13,15 +13,15 @@ from openpyxl.utils.exceptions import InvalidFileException
 from PIL import Image, ImageOps
 from pypdf import PdfReader
 import pytesseract
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from app.models.attendee import Attendee
 from app.models.event_attendee import EventAttendee
 from app.models.survey_result import SurveyResult
 from app.models.test_result import TestResult
+from app.services.attendee_match import get_or_create_link, match_or_create_attendee
 from app.services.compliance import recalculate_event
-from app.services.identity import humanize_name, normalize_email, normalize_name, split_name
+from app.services.identity import humanize_name, split_name
 
 ALIASES = {
     "full_name": ["full name", "name", "attendee", "participant name", "student name"],
@@ -64,51 +64,6 @@ def _identity(row: dict[str, str]) -> dict[str, str | None]:
         "company": _value(row, "company"),
         "license_number": _value(row, "license_number"),
     }
-
-
-def _get_or_create_attendee(db: Session, data: dict[str, str | None]) -> Attendee:
-    email = normalize_email(data["email"])
-    name = normalize_name(data["full_name"])
-    clauses = []
-    if email:
-        clauses.append(Attendee.normalized_email == email)
-    if name:
-        clauses.append(Attendee.normalized_name == name)
-    attendee = db.scalar(select(Attendee).where(or_(*clauses)).order_by(Attendee.id)) if clauses else None
-    if attendee:
-        if not attendee.email and data["email"]:
-            attendee.email = data["email"]
-            attendee.normalized_email = email
-        attendee.company = attendee.company or data["company"]
-        attendee.license_number = attendee.license_number or data["license_number"]
-        return attendee
-    attendee = Attendee(
-        first_name=data["first_name"],
-        last_name=data["last_name"],
-        full_name=data["full_name"] or "",
-        normalized_name=name,
-        email=data["email"],
-        normalized_email=email,
-        company=data["company"],
-        license_number=data["license_number"],
-    )
-    db.add(attendee)
-    db.flush()
-    return attendee
-
-
-def _get_or_create_link(db: Session, event_id: int, attendee: Attendee) -> EventAttendee:
-    link = db.scalar(
-        select(EventAttendee).where(
-            EventAttendee.event_id == event_id,
-            EventAttendee.attendee_id == attendee.id,
-        )
-    )
-    if not link:
-        link = EventAttendee(event_id=event_id, attendee_id=attendee.id)
-        db.add(link)
-        db.flush()
-    return link
 
 
 def _parse_score(value: str | None) -> Decimal:
@@ -543,8 +498,17 @@ def process_rows(
             continue
         try:
             identity = _identity(row)
-            attendee = _get_or_create_attendee(db, identity)
-            link = _get_or_create_link(db, event_id, attendee)
+            attendee = match_or_create_attendee(
+                db,
+                event_id,
+                identity["full_name"] or "",
+                identity["email"],
+                first_name=identity["first_name"],
+                last_name=identity["last_name"],
+                company=identity["company"],
+                license_number=identity["license_number"],
+            )
+            link = get_or_create_link(db, event_id, attendee.id)
             if file_type == "registration":
                 link.registered = True
             elif file_type == "attendance":

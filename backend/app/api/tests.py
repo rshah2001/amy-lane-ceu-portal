@@ -68,7 +68,7 @@ def submit_public_test(
     score = Decimal(str(round(correct / len(questions) * 100, 2)))
     passed = score >= PASSING_SCORE
 
-    attendee = match_or_create_attendee(db, payload.full_name, str(payload.email))
+    attendee = match_or_create_attendee(db, event.id, payload.full_name, str(payload.email))
     link = get_or_create_link(db, event.id, attendee.id)
     result = db.scalar(
         select(TestResult).where(

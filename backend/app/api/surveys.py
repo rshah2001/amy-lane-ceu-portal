@@ -74,7 +74,7 @@ def submit_public_survey(
                 status_code=422,
                 detail="One of the answers is not a valid option for its question.",
             )
-    attendee = match_or_create_attendee(db, payload.full_name, str(payload.email))
+    attendee = match_or_create_attendee(db, event.id, payload.full_name, str(payload.email))
     link = get_or_create_link(db, event.id, attendee.id)
     # Every submission is kept as its own row: the same attendee may answer
     # more than once and admins want to see all responses, not just the last.
