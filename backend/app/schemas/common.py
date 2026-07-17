@@ -115,6 +115,9 @@ class EventUpdate(BaseModel):
     certificate_title: str | None = None
     assigned_presenter_id: int | None = None
     survey_questions: list[SurveyQuestionIn] | None = None
+    # Admin override for the workflow stage, including moving an event out of
+    # (or into) "completed" by hand.
+    status: str | None = Field(default=None, pattern="^(draft|review|completed)$")
 
 
 class EventOut(ORMModel):

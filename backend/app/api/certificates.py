@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import require_admin
@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.models.certificate import Certificate
 from app.models.certificate_email_log import CertificateEmailLog
 from app.models.event_attendee import EventAttendee
+from app.models.training_event import TrainingEvent
 from app.models.user import User
 from app.schemas.common import BulkActionResult, CertificateOut, ManualIssueRequest
 from app.services.attendee_match import get_or_create_link, match_or_create_attendee
@@ -40,6 +41,50 @@ def get_link(db: Session, event_id: int, link_id: int) -> EventAttendee:
     if not link:
         raise HTTPException(status_code=404, detail="Event attendee not found")
     return link
+
+
+def maybe_mark_event_completed(db: Session, event: TrainingEvent, current_user: User) -> bool:
+    """Flip the event to "completed" once every approved attendee's certificate
+    has been sent. Approved-but-ungenerated and generated-but-unsent
+    certificates both block completion. Never un-completes: attendees added to
+    a completed event later (e.g. a manual issue) leave the status alone.
+    Adds the status change and an audit row to the session; the caller commits.
+    """
+    if event.status == "completed":
+        return False
+    # The session runs with autoflush=False; push pending sent_at updates to
+    # the DB so the counts below see the sends from this request.
+    db.flush()
+    approved_count = db.scalar(
+        select(func.count(EventAttendee.id)).where(
+            EventAttendee.event_id == event.id,
+            EventAttendee.approved.is_(True),
+        )
+    )
+    if not approved_count:
+        return False
+    unsent_count = db.scalar(
+        select(func.count(EventAttendee.id))
+        .outerjoin(Certificate, Certificate.event_attendee_id == EventAttendee.id)
+        .where(
+            EventAttendee.event_id == event.id,
+            EventAttendee.approved.is_(True),
+            or_(Certificate.id.is_(None), Certificate.sent_at.is_(None)),
+        )
+    )
+    if unsent_count:
+        return False
+    event.status = "completed"
+    record_audit(
+        db,
+        "event.completed",
+        "training_event",
+        event.id,
+        current_user,
+        event.id,
+        {"trigger": "all_certificates_sent"},
+    )
+    return True
 
 
 def ensure_pdf(link: EventAttendee, certificate: Certificate) -> Path:
@@ -176,7 +221,7 @@ def send_certificate(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ) -> Certificate:
-    get_visible_event(db, event_id, current_user)
+    event = get_visible_event(db, event_id, current_user)
     link = get_link(db, event_id, link_id)
     certificate = link.certificate
     if not certificate:
@@ -227,6 +272,7 @@ def send_certificate(
         event_id,
         {"recipient": link.attendee.email},
     )
+    maybe_mark_event_completed(db, event, current_user)
     db.commit()
     db.refresh(certificate)
     return certificate
@@ -371,7 +417,7 @@ def send_all_generated(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ) -> BulkActionResult:
-    get_visible_event(db, event_id, current_user)
+    event = get_visible_event(db, event_id, current_user)
     links = list(
         db.scalars(
             select(EventAttendee)
@@ -403,6 +449,7 @@ def send_all_generated(
             record_audit(db, "certificate.email_failed", "certificate", certificate.id, current_user, event_id, {"error": str(exc)})
             failed += 1
             details.append(f"{link.attendee.full_name}: {exc}")
+    maybe_mark_event_completed(db, event, current_user)
     db.commit()
     return BulkActionResult(action="send_all", processed=processed, skipped=skipped, failed=failed, details=details)
 
