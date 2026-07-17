@@ -51,13 +51,19 @@ def safe_settings(tmp_path_factory):
     """
     original_storage = settings.storage_dir
     original_email_mode = settings.email_delivery_mode
+    original_supabase = (settings.supabase_url, settings.supabase_service_role_key)
     settings.storage_dir = tmp_path_factory.mktemp("storage")
     settings.email_delivery_mode = "log"
+    # Force the local-disk storage backend: tests must never touch a real
+    # Supabase bucket even if the developer .env configures one.
+    settings.supabase_url = None
+    settings.supabase_service_role_key = None
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
     settings.certificates_dir.mkdir(parents=True, exist_ok=True)
     yield
     settings.storage_dir = original_storage
     settings.email_delivery_mode = original_email_mode
+    settings.supabase_url, settings.supabase_service_role_key = original_supabase
 
 
 @pytest.fixture(scope="session")

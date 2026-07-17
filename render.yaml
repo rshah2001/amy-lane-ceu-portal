@@ -40,3 +40,12 @@ services:
         value: "7"
       - key: STORAGE_DIR
         value: /app/storage
+      # Supabase Storage (durable files; the Render disk is ephemeral).
+      # Create a PRIVATE bucket in Supabase > Storage first. Leave these unset
+      # to fall back to local-disk-only storage.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false

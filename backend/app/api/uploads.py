@@ -15,6 +15,7 @@ from app.models.uploaded_file import UploadedFile
 from app.models.user import User
 from app.schemas.common import UploadedFileOut
 from app.services.audit import record_audit
+from app.services import storage
 from app.services.csv_import import process_document, save_upload
 from app.services.notifications import notify_admins
 
@@ -86,7 +87,9 @@ def download_upload(
             UploadedFile.event_id == event_id,
         )
     )
-    if not upload or not Path(upload.storage_path).is_file():
+    # ensure_local restores the file from Supabase Storage (when configured)
+    # if the local cache copy was lost, e.g. after an ephemeral-disk restart.
+    if not upload or not storage.ensure_local(Path(upload.storage_path)):
         raise HTTPException(status_code=404, detail="Uploaded file not found")
     suffix = Path(upload.original_filename).suffix.lower()
     fallback = Path(upload.original_filename).name.encode("ascii", "replace").decode("ascii").replace('"', "'")

@@ -13,6 +13,7 @@ from reportlab.pdfgen.canvas import Canvas
 
 from app.core.config import settings
 from app.models.event_attendee import EventAttendee
+from app.services import storage
 
 logger = logging.getLogger("app.certificates")
 
@@ -242,6 +243,19 @@ def generate_certificate_pdf(
     template_path = link.event.certificate_template_path
     # A branded PDF template (e.g. the NMEDA cert) is stamped with the variable
     # fields; image templates and the no-template case use the built-in design.
-    if template_path and Path(template_path).suffix.lower() == ".pdf" and Path(template_path).exists():
-        return _overlay_on_pdf(template_path, values, layout, output, preview)
-    return _legacy_certificate(link, certificate_number, values, output, preview)
+    # ensure_local re-fetches the template from Supabase Storage if the local
+    # copy was lost (ephemeral disk); with local-only storage it is a plain
+    # existence check.
+    if (
+        template_path
+        and Path(template_path).suffix.lower() == ".pdf"
+        and storage.ensure_local(Path(template_path))
+    ):
+        result = _overlay_on_pdf(template_path, values, layout, output, preview)
+    else:
+        result = _legacy_certificate(link, certificate_number, values, output, preview)
+    if not preview:
+        # Previews are throwaway; real certificates are mirrored to the
+        # remote backend (no-op when only local storage is configured).
+        storage.mirror_file(result)
+    return result
