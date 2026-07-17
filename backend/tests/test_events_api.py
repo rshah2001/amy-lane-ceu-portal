@@ -215,12 +215,11 @@ class TestAdminOnlyEndpoints:
         assert response.status_code == 200, response.text
         assert response.json()["current_user"]["email"] == admin.email
 
-        # NOTE: /api/settings currently only requires authentication
-        # (get_current_user), not the admin role, so presenters get a 200.
-        # Accept 403 too so this test survives if the endpoint is hardened
-        # to admin-only.
+        # Presenters can load their own account details, but none of the
+        # ops/environment configuration comes back for them.
         response = client.get("/api/settings", headers=presenter.headers)
-        assert response.status_code in (200, 403), response.text
+        assert response.status_code == 200, response.text
+        assert set(response.json()) == {"current_user"}
 
 
 class TestDeleteEvent:

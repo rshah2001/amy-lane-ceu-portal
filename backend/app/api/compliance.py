@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from app.api.deps import get_current_user, require_admin
+from app.api.deps import require_admin
 from app.api.events import get_visible_event
 from app.db.session import get_db
 from app.models.attendee import Attendee
@@ -49,7 +49,9 @@ def review_compliance(
     eligibility: str | None = None,
     search: str | None = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # Compliance review is an admin-only surface: presenters hand in documents
+    # but never see per-attendee eligibility, scores, or approval state.
+    current_user: User = Depends(require_admin),
 ) -> list[ComplianceRow]:
     get_visible_event(db, event_id, current_user)
     recalculate_event(db, event_id)

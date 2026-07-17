@@ -14,18 +14,24 @@ router = APIRouter(prefix="/settings", tags=["Settings"])
 
 @router.get("")
 def get_settings(current_user: User = Depends(get_current_user)) -> dict:
-    return {
-        "organization": settings.certificate_issuer_name,
-        "retention_years": settings.retention_years,
-        "email_delivery_mode": settings.email_delivery_mode,
-        "smtp_configured": bool(settings.smtp_host),
-        "environment": settings.environment,
+    payload: dict = {
         "current_user": {
             "full_name": current_user.full_name,
             "email": current_user.email,
             "role": current_user.role,
         },
     }
+    # Ops/environment configuration is admin-only; presenters get just their
+    # own account details (their settings page shows nothing else anyway).
+    if current_user.role == "admin":
+        payload.update(
+            organization=settings.certificate_issuer_name,
+            retention_years=settings.retention_years,
+            email_delivery_mode=settings.email_delivery_mode,
+            smtp_configured=bool(settings.smtp_host),
+            environment=settings.environment,
+        )
+    return payload
 
 
 @router.get("/survey-template")
