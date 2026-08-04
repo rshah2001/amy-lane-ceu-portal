@@ -1,16 +1,21 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import require_admin
 from app.api.events import get_visible_event
 from app.db.session import get_db
 from app.models.attendee import Attendee
+from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
+from app.models.survey_result import SurveyResult
+from app.models.test_result import TestResult
 from app.models.user import User
-from app.schemas.common import ApprovalRequest, ComplianceRow
+from app.schemas.common import ApprovalRequest, ComplianceRow, RosterRemovalResult
+from app.services import storage
 from app.services.audit import record_audit
 from app.services.compliance import lifecycle_status, recalculate_event
 
@@ -74,6 +79,173 @@ def review_compliance(
         )
     links = db.scalars(query.order_by(EventAttendee.id)).unique()
     return [serialize_link(link) for link in links]
+
+
+def _already_issued(certificate: Certificate) -> bool:
+    """Has this certificate reached its holder?
+
+    Two ways, and both leave a live credential in someone's hands: we emailed
+    it (sent_at), or the holder pulled the PDF themselves from the public
+    verification portal (downloaded_at — written only by that public route).
+    A generated-but-undelivered certificate is not in this category: its number
+    has never left the system, so a routine cleanup may drop it.
+    """
+    return certificate.sent_at is not None or certificate.downloaded_at is not None
+
+
+def _remove_links(
+    db: Session,
+    event_id: int,
+    links: list[EventAttendee],
+    current_user: User,
+    *,
+    include_sent: bool,
+) -> tuple[int, list[str], list[str]]:
+    """Detach attendees from one event, returning (removed, kept, pdf paths).
+
+    Everything that belongs to the attendee *on this event* goes with the link:
+    the certificate (and its email logs, by cascade) plus the event's test and
+    survey results — leaving those behind would resurface them in reports and
+    in the re-import guards that protect web submissions. The global Attendee
+    record is untouched, matching how deleting a whole event behaves.
+    """
+    removed = 0
+    kept: list[str] = []
+    pdf_paths: list[str] = []
+    removed_attendee_ids: list[int] = []
+    for link in links:
+        certificate = link.certificate
+        if certificate is not None and not include_sent and _already_issued(certificate):
+            # The holder has this certificate and can still look its number up
+            # in the public verification portal; dropping it takes an explicit
+            # override rather than a routine roster cleanup.
+            kept.append(link.attendee.full_name)
+            continue
+        record_audit(
+            db,
+            "attendee.removed",
+            "event_attendee",
+            link.id,
+            current_user,
+            event_id,
+            {
+                "attendee_id": link.attendee_id,
+                "full_name": link.attendee.full_name,
+                "email": link.attendee.email,
+                **(
+                    {
+                        "certificate_number": certificate.certificate_number,
+                        "certificate_sent": certificate.sent_at is not None,
+                        "certificate_downloaded": certificate.downloaded_at is not None,
+                    }
+                    if certificate
+                    else {}
+                ),
+            },
+        )
+        # Deleted explicitly for the same reason as in delete_event: the
+        # relationship carries no ORM cascade, so the ORM would otherwise try
+        # to NULL a non-nullable FK.
+        if certificate is not None:
+            pdf_paths.append(certificate.pdf_path)
+            db.delete(certificate)
+        # Read the FK before marking the row deleted, so the batched result
+        # cleanup below cannot depend on a flushed/expired attribute.
+        removed_attendee_ids.append(link.attendee_id)
+        db.delete(link)
+        removed += 1
+    # One statement per table instead of two per attendee. Anonymous survey
+    # rows (attendee_id IS NULL) never match, so blind feedback survives a
+    # roster clear by design.
+    if removed_attendee_ids:
+        db.execute(
+            delete(TestResult).where(
+                TestResult.event_id == event_id,
+                TestResult.attendee_id.in_(removed_attendee_ids),
+            )
+        )
+        db.execute(
+            delete(SurveyResult).where(
+                SurveyResult.event_id == event_id,
+                SurveyResult.attendee_id.in_(removed_attendee_ids),
+            )
+        )
+    db.flush()
+    return removed, kept, pdf_paths
+
+
+@router.delete("", response_model=RosterRemovalResult)
+def clear_roster(
+    event_id: int,
+    include_sent: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> RosterRemovalResult:
+    """Empty this event's attendee roster.
+
+    The repair for a roster that picked up the wrong people (e.g. names merged
+    in from another event before matching was scoped): clear it, then upload
+    the sign-in sheet again to rebuild it from the file alone.
+    """
+    get_visible_event(db, event_id, current_user)
+    links = list(
+        db.scalars(
+            select(EventAttendee)
+            .options(joinedload(EventAttendee.attendee), joinedload(EventAttendee.certificate))
+            .where(EventAttendee.event_id == event_id)
+        ).unique()
+    )
+    removed, kept, pdf_paths = _remove_links(
+        db, event_id, links, current_user, include_sent=include_sent
+    )
+    record_audit(
+        db,
+        "roster.cleared",
+        "training_event",
+        event_id,
+        current_user,
+        event_id,
+        {"removed": removed, "kept": len(kept), "include_sent": include_sent},
+    )
+    db.commit()
+    # Best-effort file cleanup once the transaction is durable.
+    for raw_path in pdf_paths:
+        storage.delete_file(Path(raw_path))
+    return RosterRemovalResult(removed=removed, kept_with_issued_certificates=kept)
+
+
+@router.delete("/{link_id}", response_model=RosterRemovalResult)
+def remove_attendee(
+    event_id: int,
+    link_id: int,
+    include_sent: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> RosterRemovalResult:
+    """Remove one attendee from this event (e.g. a name read off the wrong sheet)."""
+    get_visible_event(db, event_id, current_user)
+    link = db.scalar(
+        select(EventAttendee)
+        .options(joinedload(EventAttendee.attendee), joinedload(EventAttendee.certificate))
+        .where(EventAttendee.id == link_id, EventAttendee.event_id == event_id)
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Attendee not found on this event")
+    removed, kept, pdf_paths = _remove_links(
+        db, event_id, [link], current_user, include_sent=include_sent
+    )
+    if not removed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{kept[0]} already has a certificate that reached them. "
+                "Removing them revokes that certificate — confirm to proceed."
+            ),
+        )
+    db.commit()
+    for raw_path in pdf_paths:
+        storage.delete_file(Path(raw_path))
+    return RosterRemovalResult(removed=removed, kept_with_issued_certificates=kept)
 
 
 @router.post("/approve", response_model=list[ComplianceRow])

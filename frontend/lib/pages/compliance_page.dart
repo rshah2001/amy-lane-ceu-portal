@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/api_client.dart';
 import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
@@ -33,7 +34,16 @@ class _CompliancePageState extends State<CompliancePage> {
     super.dispose();
   }
 
+  /// Whether the attendee is holding a certificate already — emailed to them,
+  /// or downloaded by them from the public portal. Either way its number is
+  /// live in the verification portal, so removing them revokes a real
+  /// credential and needs the explicit override. Mirrors `_already_issued`
+  /// on the backend; keep the two in step.
+  static bool _certificateReachedHolder(ComplianceRecord record) =>
+      record.certificateSentAt != null || record.certificateDownloadedAt != null;
+
   Future<void> load() async {
+    if (!mounted) return;
     setState(() {
       error = null;
       records = null;
@@ -170,6 +180,194 @@ class _CompliancePageState extends State<CompliancePage> {
     }
   }
 
+  /// Takes one person off this event's roster — the fix for a name that was
+  /// read off the wrong sheet, or that a pre-scoping upload merged in from
+  /// another event. Their certificate and this event's test/survey results go
+  /// with them; they stay on every other event they attended.
+  Future<void> remove(ComplianceRecord record) async {
+    final alreadyIssued = _certificateReachedHolder(record);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Remove ${record.fullName} from this event?'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'They come off this event only — other events they attended are unchanged.',
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Their post-test score and survey response for this event go too. Uploading the '
+                'sign-in sheet again brings the person back, but not those results.',
+                style: TextStyle(fontSize: 13, color: Color(0xFF667085)),
+              ),
+              if (alreadyIssued) ...[
+                const SizedBox(height: 10),
+                Text(
+                  record.certificateSentAt != null
+                      ? 'Their certificate was already emailed. Removing them deletes it, and the '
+                          'certificate number will no longer verify in the public portal.'
+                      : 'They already downloaded their certificate. Removing them deletes it, and the '
+                          'certificate number will no longer verify in the public portal.',
+                  style: const TextStyle(color: Color(0xFFB42318), fontWeight: FontWeight.w600),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFB42318), foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Remove attendee'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => working = true);
+    try {
+      // The dialog already spelled out the consequence, so an explicitly named
+      // attendee is removed even when their certificate reached them.
+      await widget.session.api.delete(
+        '/events/${widget.event.id}/compliance/${record.id}${alreadyIssued ? '?include_sent=true' : ''}',
+      );
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('${record.fullName} removed from this event.')));
+      await load();
+    } catch (exception) {
+      if (!mounted) return;
+      setState(() => error = exception.toString());
+      // A 409 means the server knows about a delivered certificate this row
+      // didn't: reload so the retry shows the red warning and sends the
+      // override instead of repeating the identical, always-rejected request.
+      if (exception is ApiException && exception.statusCode == 409) await load();
+    } finally {
+      if (mounted) setState(() => working = false);
+    }
+  }
+
+  /// Empties the roster. The repair for an event showing the wrong people:
+  /// clear it, then upload that event's sign-in sheet again to rebuild it.
+  Future<void> removeAll() async {
+    final messenger = ScaffoldMessenger.of(context);
+    // `records` holds a server-filtered view; this clears the WHOLE roster, so
+    // every number in the dialog has to come from an unfiltered read. Counting
+    // the visible rows would understate how many live certificates the
+    // override revokes.
+    final List<ComplianceRecord> all;
+    setState(() => working = true);
+    try {
+      final result = await widget.session.api.get('/events/${widget.event.id}/compliance') as List;
+      all = result.map((item) => ComplianceRecord.fromJson(item as Map<String, dynamic>)).toList();
+    } catch (exception) {
+      if (mounted) setState(() => error = exception.toString());
+      return;
+    } finally {
+      if (mounted) setState(() => working = false);
+    }
+    if (!mounted) return;
+    if (all.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('There are no attendees on this event to remove.')),
+      );
+      return;
+    }
+    // The filters narrow what's on screen, but this clears the whole roster —
+    // say so plainly rather than letting the visible count imply otherwise.
+    final filtered = filter != 'all' || search.text.trim().isNotEmpty;
+    final sentCount = all.where(_certificateReachedHolder).length;
+    var includeSent = false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Remove all attendees?'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Every attendee on "${widget.event.title}" is taken off the roster, along with '
+                  'their certificates and this event\'s test and survey results. This cannot be undone.',
+                ),
+                if (filtered) ...[
+                  const SizedBox(height: 10),
+                  const Text(
+                    'The whole roster is cleared, not just the rows matching the current filter.',
+                    style: TextStyle(fontSize: 13, color: Color(0xFFB54708), fontWeight: FontWeight.w600),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                const Text(
+                  'Upload this event\'s sign-in sheet again afterwards to rebuild the roster from the file alone.',
+                  style: TextStyle(fontSize: 13, color: Color(0xFF667085)),
+                ),
+                if (sentCount > 0) ...[
+                  const SizedBox(height: 6),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    dense: true,
+                    value: includeSent,
+                    onChanged: (value) => setDialogState(() => includeSent = value ?? false),
+                    title: Text(
+                      'Also remove the $sentCount attendee${sentCount == 1 ? '' : 's'} who already has their certificate',
+                      style: const TextStyle(fontSize: 13, color: Color(0xFFB42318)),
+                    ),
+                    subtitle: const Text(
+                      'Those certificate numbers stop verifying in the public portal. Left unchecked, they stay on the roster.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFB42318), foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Remove all'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => working = true);
+    try {
+      final result = await widget.session.api.delete(
+        '/events/${widget.event.id}/compliance${includeSent ? '?include_sent=true' : ''}',
+      ) as Map<String, dynamic>;
+      if (!mounted) return;
+      final removed = result['removed'] ?? 0;
+      final kept = ((result['kept_with_issued_certificates'] as List?) ?? const []).length;
+      messenger.showSnackBar(SnackBar(
+        content: Text(
+          '$removed attendee${removed == 1 ? '' : 's'} removed.'
+          '${kept == 0 ? '' : ' $kept kept — they already have their certificates.'}',
+        ),
+        duration: Duration(seconds: kept == 0 ? 4 : 8),
+      ));
+      selected.clear();
+      await load();
+    } catch (exception) {
+      if (mounted) setState(() => error = exception.toString());
+    } finally {
+      if (mounted) setState(() => working = false);
+    }
+  }
+
   Future<void> bulk(String action, String label) async {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => working = true);
@@ -213,12 +411,18 @@ class _CompliancePageState extends State<CompliancePage> {
                         'approve-all' => bulk('approve-all', 'Approve all eligible'),
                         'generate-all' => bulk('generate-all', 'Generate all'),
                         'send-all' => confirmSendAll(),
+                        'remove-all' => removeAll(),
                         _ => Future<void>.value(),
                       },
                       itemBuilder: (context) => const [
                         PopupMenuItem(value: 'approve-all', child: Text('Approve all eligible')),
                         PopupMenuItem(value: 'generate-all', child: Text('Generate all approved')),
                         PopupMenuItem(value: 'send-all', child: Text('Send all generated')),
+                        PopupMenuDivider(),
+                        PopupMenuItem(
+                          value: 'remove-all',
+                          child: Text('Remove all attendees', style: TextStyle(color: Color(0xFFB42318))),
+                        ),
                       ],
                       child: IgnorePointer(
                         child: OutlinedButton.icon(
@@ -333,13 +537,22 @@ class _CompliancePageState extends State<CompliancePage> {
                                             DataCell(lifecycleBadge(record.lifecycleStatus)),
                                             if (isAdmin)
                                               DataCell(
-                                                record.approved && record.certificateSentAt == null
-                                                    ? IconButton(
+                                                Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    if (record.approved && record.certificateSentAt == null)
+                                                      IconButton(
                                                         tooltip: 'Revoke approval',
                                                         onPressed: working ? null : () => revoke(record),
                                                         icon: const Icon(Icons.undo, size: 18, color: Color(0xFFB42318)),
-                                                      )
-                                                    : const SizedBox.shrink(),
+                                                      ),
+                                                    IconButton(
+                                                      tooltip: 'Remove from this event',
+                                                      onPressed: working ? null : () => remove(record),
+                                                      icon: const Icon(Icons.person_remove_outlined, size: 18, color: Color(0xFF667085)),
+                                                    ),
+                                                  ],
+                                                ),
                                               ),
                                           ],
                                         ),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../core/session.dart';
+import '../models/models.dart';
 import '../widgets/common.dart';
 
 class AttendeeSearchPage extends StatefulWidget {
@@ -15,11 +16,18 @@ class AttendeeSearchPage extends StatefulWidget {
 class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
   final query = TextEditingController();
   List<Map<String, dynamic>>? rows;
+  List<TrainingEvent> events = const [];
   String? error;
+
+  /// null means "All events" — this page searches across events by design, so
+  /// narrowing to one roster (e.g. checking who a sign-in sheet just added) is
+  /// an explicit choice.
+  int? eventId;
 
   @override
   void initState() {
     super.initState();
+    loadEvents();
     search();
   }
 
@@ -29,22 +37,49 @@ class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
     super.dispose();
   }
 
+  Future<void> loadEvents() async {
+    try {
+      final result = await widget.session.api.get('/events') as List;
+      if (mounted) {
+        setState(() {
+          events = result.map((item) => TrainingEvent.fromJson(item as Map<String, dynamic>)).toList();
+          // A Dropdown asserts if its value has no matching item, so a
+          // selection that is no longer in the list falls back to "All events".
+          if (eventId != null && !events.any((event) => event.id == eventId)) eventId = null;
+        });
+      }
+    } catch (_) {
+      // The event filter is an optional narrowing; the search itself still
+      // works without it, so a failure here must not block the page.
+    }
+  }
+
+  /// Guards against an out-of-order response: flipping the event filter twice
+  /// leaves two requests in flight, and without this the slower (older) one
+  /// would win and show a roster that doesn't match the dropdown.
+  int _requestSeq = 0;
+
   Future<void> search() async {
+    final seq = ++_requestSeq;
     setState(() {
       rows = null;
       error = null;
     });
     try {
-      final encoded = Uri.encodeQueryComponent(query.text.trim());
-      final result = await widget.session.api.get('/attendees/search${encoded.isEmpty ? '' : '?q=$encoded'}') as List;
-      if (mounted) {
+      final params = <String>[
+        if (query.text.trim().isNotEmpty) 'q=${Uri.encodeQueryComponent(query.text.trim())}',
+        if (eventId != null) 'event_id=$eventId',
+      ];
+      final result = await widget.session.api
+          .get('/attendees/search${params.isEmpty ? '' : '?${params.join('&')}'}') as List;
+      if (mounted && seq == _requestSeq) {
         setState(() {
           rows = result.cast<Map<String, dynamic>>();
           error = null;
         });
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted && seq == _requestSeq) setState(() => error = exception.toString());
     }
   }
 
@@ -87,12 +122,59 @@ class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
             children: [
               const PageHeader(title: 'Attendee Search', subtitle: 'Find attendees across events, approvals, and issued certificates.'),
               const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(child: TextField(controller: query, onSubmitted: (_) => search(), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search name, email, or company'))),
-                  const SizedBox(width: 10),
-                  IconButton.filledTonal(tooltip: 'Search', onPressed: search, icon: const Icon(Icons.search)),
-                ],
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final searchField = TextField(
+                    controller: query,
+                    onSubmitted: (_) => search(),
+                    decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search name, email, or company'),
+                  );
+                  final eventFilter = DropdownButtonFormField<int?>(
+                    initialValue: eventId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.event_note_outlined),
+                      labelText: 'Event',
+                      isDense: true,
+                    ),
+                    items: [
+                      const DropdownMenuItem<int?>(value: null, child: Text('All events')),
+                      for (final event in events)
+                        DropdownMenuItem<int?>(
+                          value: event.id,
+                          child: Text(event.title, overflow: TextOverflow.ellipsis),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      setState(() => eventId = value);
+                      search();
+                    },
+                  );
+                  final searchButton = IconButton.filledTonal(
+                    tooltip: 'Search',
+                    onPressed: search,
+                    icon: const Icon(Icons.search),
+                  );
+                  if (constraints.maxWidth < 760) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        searchField,
+                        const SizedBox(height: 10),
+                        Row(children: [Expanded(child: eventFilter), const SizedBox(width: 10), searchButton]),
+                      ],
+                    );
+                  }
+                  return Row(
+                    children: [
+                      Expanded(flex: 3, child: searchField),
+                      const SizedBox(width: 10),
+                      Expanded(flex: 2, child: eventFilter),
+                      const SizedBox(width: 10),
+                      searchButton,
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 14),
               Expanded(
@@ -104,10 +186,12 @@ class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
                           : rows!.isEmpty
                               ? EmptyState(
                                   icon: Icons.person_search_outlined,
-                                  message: query.text.trim().isEmpty ? 'No attendees yet' : 'No attendees match this search',
+                                  message: query.text.trim().isEmpty
+                                      ? (eventId == null ? 'No attendees yet' : 'No attendees on this event yet')
+                                      : 'No attendees match this search',
                                   detail: query.text.trim().isEmpty
                                       ? 'Attendees appear here once event rosters and attendance sheets are uploaded.'
-                                      : 'Try a different name, email, or company.',
+                                      : 'Try a different name, email, or company — or widen the event filter to all events.',
                                 )
                               : _GroupedResults(groups: _groupByEvent(rows!)),
                 ),

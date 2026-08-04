@@ -49,9 +49,16 @@ DEFAULT_REPORT_COLUMNS = [
 @router.get("/attendees/search", response_model=list[AttendeeSearchRow])
 def attendee_search(
     q: str = "",
+    event_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[AttendeeSearchRow]:
+    """Attendees across every visible event, or one event when event_id is set.
+
+    This search spans events on purpose (it answers "which events has this
+    person attended?"), so reviewing a single roster needs the event_id
+    narrowing rather than the unfiltered default.
+    """
     query = (
         select(EventAttendee)
         .options(
@@ -64,6 +71,8 @@ def attendee_search(
     )
     if current_user.role != "admin":
         query = query.where(TrainingEvent.assigned_presenter_id == current_user.id)
+    if event_id is not None:
+        query = query.where(EventAttendee.event_id == event_id)
     if q:
         query = query.where(
             (Attendee.full_name.ilike(f"%{q}%"))
