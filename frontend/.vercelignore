@@ -1,0 +1,12 @@
+# Vercel serves the pre-built Flutter bundle in build/web (see vercel.json:
+# buildCommand null, outputDirectory build/web) because Vercel has no Flutter
+# SDK — the bundle is built locally by `flutter build web --release`.
+#
+# Without this file Vercel falls back to .gitignore, whose "/build/" rule means
+# the bundle is never uploaded and the deploy silently ships whatever was there
+# before. So: ignore everything, then re-include build/web only. That also
+# keeps the 143 MB .dart_tool cache out of the upload.
+/*
+!/build
+/build/*
+!/build/web
