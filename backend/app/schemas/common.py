@@ -192,6 +192,16 @@ class ApprovalRequest(BaseModel):
     override: bool = False
 
 
+class RosterRemovalResult(BaseModel):
+    """Outcome of removing attendees from one event's roster."""
+
+    removed: int
+    # Attendees left in place because their certificate already reached them —
+    # emailed, or downloaded by the holder from the public portal. Removing
+    # those revokes a live credential, so it needs the include_sent override.
+    kept_with_issued_certificates: list[str] = Field(default_factory=list)
+
+
 class ManualIssueRequest(BaseModel):
     """Admin-issued certificate for anyone, bypassing the eligibility rules."""
 
