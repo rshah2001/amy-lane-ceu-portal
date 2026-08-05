@@ -31,7 +31,13 @@ class _CheckinPageState extends State<CheckinPage> {
   final email = TextEditingController();
   Map<String, dynamic>? event;
   Map<String, dynamic> nextSteps = {};
-  String? error;
+  // Two separate failures, because they need opposite treatment: a failed
+  // *load* means there is no form to show (fatal, full-page panel), while a
+  // failed *submit* must leave the filled-in form on screen so the attendee
+  // can simply press the button again. Collapsing them into one field hid the
+  // form behind a permanent error panel after any submit hiccup.
+  String? loadError;
+  String? submitError;
   bool submitted = false;
   bool saving = false;
 
@@ -53,9 +59,16 @@ class _CheckinPageState extends State<CheckinPage> {
   Future<void> load() async {
     try {
       final result = await widget.api.get('/public/checkin/${widget.token}') as Map<String, dynamic>;
-      if (mounted) setState(() => event = result);
+      // Clear the error on success, or "Retry" would fetch the event fine and
+      // still leave the failure panel on screen forever.
+      if (mounted) {
+        setState(() {
+          event = result;
+          loadError = null;
+        });
+      }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) setState(() => loadError = humanizeError(exception));
     }
   }
 
@@ -63,7 +76,7 @@ class _CheckinPageState extends State<CheckinPage> {
     if (!formKey.currentState!.validate()) return;
     setState(() {
       saving = true;
-      error = null;
+      submitError = null;
     });
     try {
       final result = await widget.api.post('/public/checkin/${widget.token}', {
@@ -77,7 +90,7 @@ class _CheckinPageState extends State<CheckinPage> {
         });
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) setState(() => submitError = humanizeError(exception));
     } finally {
       if (mounted) setState(() => saving = false);
     }
@@ -142,8 +155,8 @@ class _CheckinPageState extends State<CheckinPage> {
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 560),
-            child: error != null
-                ? ErrorPanel(message: error!, onRetry: load)
+            child: loadError != null
+                ? ErrorPanel(message: loadError!, onRetry: load)
                 : event == null
                     ? const LoadingPanel()
                     : submitted
@@ -203,9 +216,9 @@ class _CheckinPageState extends State<CheckinPage> {
                                       decoration: const InputDecoration(labelText: 'Email address'),
                                       validator: (v) => v == null || !v.contains('@') ? 'Enter a valid email' : null,
                                     ),
-                                    if (error != null) ...[
+                                    if (submitError != null) ...[
                                       const SizedBox(height: 12),
-                                      Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                                      Text(submitError!, style: const TextStyle(color: Color(0xFFB42318))),
                                     ],
                                     const SizedBox(height: 22),
                                     ElevatedButton.icon(

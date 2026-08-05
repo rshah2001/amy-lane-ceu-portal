@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../core/api_client.dart';
 import '../core/theme.dart';
 
 class PageHeader extends StatelessWidget {
@@ -184,6 +185,30 @@ class ErrorPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Turns any thrown object into something worth showing a training
+/// coordinator. [ApiException] already carries a server-authored message, so
+/// that is passed through — but its status code is used to add the bit the
+/// server can't know: what the reader should do next. Anything else (socket
+/// failures, JSON cast errors) stringifies into developer noise like
+/// "ClientException with SocketException:", so it is replaced wholesale rather
+/// than shown.
+String humanizeError(Object exception) {
+  if (exception is ApiException) {
+    final message = exception.message.trim();
+    return switch (exception.statusCode) {
+      401 => 'Your session has expired. Please sign in again.',
+      403 => message.isEmpty ? "You don't have permission to do that." : message,
+      404 => message.isEmpty ? 'That item no longer exists. It may have been deleted.' : message,
+      409 => message.isEmpty ? 'That conflicts with something already saved.' : message,
+      429 => 'Too many attempts. Please wait a moment and try again.',
+      >= 500 => 'The server had a problem completing that. Please try again — '
+          'if it keeps happening, contact your administrator.',
+      _ => message.isEmpty ? 'Something went wrong. Please try again.' : message,
+    };
+  }
+  return 'Could not reach the server. Check your internet connection and try again.';
 }
 
 /// Human label + colour for a certificate lifecycle status string from the API.
