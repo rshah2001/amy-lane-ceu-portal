@@ -45,6 +45,62 @@ jobs:
       - name: Run tests
         run: python -m pytest tests
 
+  # The pytest job above builds its schema with Base.metadata.create_all on
+  # SQLite, so it never runs a migration and never enforces a foreign key. That
+  # gap let notifications.created_at be NOT NULL in the ORM and nullable in
+  # migration 0006 without a single test failing. This job exercises the real
+  # thing: the migration chain, on Postgres, both directions.
+  migrations:
+    name: Migration chain & schema drift (Postgres)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ceu_user
+          POSTGRES_PASSWORD: ceu_password
+          POSTGRES_DB: ceu_compliance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg://ceu_user:ceu_password@localhost:5432/ceu_compliance
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Apply every migration from scratch
+        run: python -m alembic upgrade head
+
+      - name: Fail on drift between migrations and ORM models
+        run: python -m scripts.check_migration_drift
+
+      # A migration nobody can reverse is a migration nobody can safely deploy.
+      - name: Verify downgrades are reversible
+        run: |
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+
   frontend:
     name: Frontend analyze & test (Flutter)
     runs-on: ubuntu-latest
