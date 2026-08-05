@@ -25,6 +25,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 import app.models  # noqa: E402,F401 - register every mapper before create_all
 from app.core.config import settings  # noqa: E402
+from app.core.rate_limit import reset_public_rate_limits  # noqa: E402
 from app.core.security import create_access_token, get_password_hash  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
@@ -64,6 +65,20 @@ def safe_settings(tmp_path_factory):
     settings.storage_dir = original_storage
     settings.email_delivery_mode = original_email_mode
     settings.supabase_url, settings.supabase_service_role_key = original_supabase
+
+
+@pytest.fixture(autouse=True)
+def fresh_public_rate_limits():
+    """Public rate-limit counters are process-global; start every test clean.
+
+    Without this, tests that share an event token would leak their request
+    budget into each other and fail in an order-dependent way. Resetting also
+    re-reads the configured limits, so a test may lower a limit, reset, and
+    exercise the 429 path.
+    """
+    reset_public_rate_limits()
+    yield
+    reset_public_rate_limits()
 
 
 @pytest.fixture(scope="session")

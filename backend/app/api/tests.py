@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.api.events import get_visible_event
 from app.core.config import settings
+from app.core.rate_limit import PublicRateLimit
 from app.db.session import get_db
 from app.models.test_result import TestResult
 from app.models.training_event import TrainingEvent
@@ -53,7 +54,10 @@ def submit_public_test(
     token: str,
     payload: PublicTestSubmission,
     db: Session = Depends(get_db),
+    _rate_limit: None = Depends(PublicRateLimit("test", "token")),
 ) -> TestSubmissionResult:
+    # Public (QR-token) endpoint: rate limited per caller + token so the
+    # printed link cannot be scripted into unlimited scored test results.
     event = get_test_event(db, token)
     questions = event.test_questions or []
     if not questions:

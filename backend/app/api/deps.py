@@ -17,7 +17,16 @@ def get_current_user(
     payload = decode_access_token(credentials.credentials)
     if not payload or not payload.get("sub"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
-    user = db.scalar(select(User).where(User.id == int(payload["sub"])))
+    try:
+        # "sub" is attacker-supplied (it only has to survive signature checks,
+        # e.g. a token minted against an older/leaked key): a non-numeric value
+        # is a bad token, not a server fault, so it must not surface as a 500.
+        user_id = int(payload["sub"])
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        ) from None
+    user = db.scalar(select(User).where(User.id == user_id))
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
     return user

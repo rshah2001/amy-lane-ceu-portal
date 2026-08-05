@@ -239,6 +239,15 @@ class PublicSurveyOut(BaseModel):
     questions: list[dict]
 
 
+# Bounds for the anonymous survey payload. A real survey has a handful of
+# questions and a paragraph-sized answer; anything past these limits is either
+# a broken client or someone using the public form as free storage (the values
+# are replayed into the admin CSV, the insights view, and the AI summariser).
+MAX_SURVEY_ANSWERS = 50
+MAX_SURVEY_ANSWER_LENGTH = 4000
+MAX_SURVEY_QUESTION_ID_LENGTH = 100
+
+
 class PublicSurveySubmission(BaseModel):
     # Surveys accept anonymous/blind feedback: every identity field is optional,
     # but a name that IS provided must still look like one (min 2 chars).
@@ -246,6 +255,26 @@ class PublicSurveySubmission(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=255)
     email: EmailStr | None = None
     answers: dict[str, str]
+
+    @field_validator("answers")
+    @classmethod
+    def bound_answers(cls, value: dict[str, str]) -> dict[str, str]:
+        """Cap how much an anonymous caller can push through the public form.
+
+        Which question ids are *allowed* is checked in the endpoint, where the
+        event's own question set is known; this only enforces the size limits.
+        """
+        if len(value) > MAX_SURVEY_ANSWERS:
+            raise ValueError(f"A survey response may not carry more than {MAX_SURVEY_ANSWERS} answers")
+        for question_id, answer in value.items():
+            if len(question_id) > MAX_SURVEY_QUESTION_ID_LENGTH:
+                raise ValueError("Survey question ids are limited to 100 characters")
+            if len(answer) > MAX_SURVEY_ANSWER_LENGTH:
+                raise ValueError(
+                    f"Answer for {question_id!r} exceeds the "
+                    f"{MAX_SURVEY_ANSWER_LENGTH}-character limit"
+                )
+        return value
 
     @field_validator("business_location", "full_name", "email", mode="before")
     @classmethod

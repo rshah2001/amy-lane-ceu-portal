@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_admin
 from app.api.events import get_visible_event
 from app.core.config import settings
+from app.core.rate_limit import PublicRateLimit
 from app.db.session import get_db
 from app.models.attendee import Attendee
 from app.models.survey_result import SurveyResult
@@ -26,6 +27,7 @@ from app.schemas.common import (
 )
 from app.services.attendee_match import get_or_create_link, match_or_create_attendee
 from app.services.audit import record_audit
+from app.services.csv_safe import csv_safe
 from app.services.compliance import recalculate_event
 from app.services.survey_ai import summarize_survey_answers
 
@@ -60,8 +62,29 @@ def submit_public_survey(
     token: str,
     payload: PublicSurveySubmission,
     db: Session = Depends(get_db),
+    _rate_limit: None = Depends(PublicRateLimit("survey", "token")),
 ) -> dict:
+    # Public (QR-token) endpoint: rate limited per caller + token, and the
+    # answer payload is bounded both in the schema (count and per-value length)
+    # and here, against this event's own question set.
     event = get_survey_event(db, token)
+    # Answers may only address questions this event actually asks: the payload
+    # is otherwise an anonymous key/value store that shows up verbatim in the
+    # admin CSV and the insights view.
+    known_ids = {
+        str(question.get("id"))
+        for question in event.survey_questions or []
+        if question.get("id") is not None
+    }
+    if known_ids:
+        unknown = sorted(set(payload.answers) - known_ids)
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown survey question(s): {', '.join(unknown[:5])}",
+            )
+    # An event with no configured questions (legacy/seeded rows) has nothing to
+    # validate against; those submissions are still bounded by the schema caps.
     # Choice questions only accept one of their configured options.
     options_for = {
         str(question.get("id")): question.get("options") or []
@@ -205,22 +228,27 @@ def export_survey_responses(
 
     output = io.StringIO()
     writer = csv.writer(output)
+    # The six fixed headers are ours and go out verbatim; the question labels
+    # are admin-authored (and fall back to submitted answer keys), so they are
+    # neutralized like any other non-hardcoded cell. Every data cell below is
+    # user-derived -- the survey is a public, unauthenticated form -- so all of
+    # them run through csv_safe to keep formulas out of the admin's Excel.
     writer.writerow(
         ["Event", "Attendee", "Email", "Company", "Business Name / Location", "Completed at"]
-        + [label_for.get(qid, qid) for qid in question_keys]
+        + [csv_safe(label_for.get(qid, qid)) for qid in question_keys]
     )
     for result, attendee, event in rows:
         answers = result.raw_payload or {}
         writer.writerow(
             [
-                event.title,
-                attendee.full_name if attendee else "Anonymous",
-                (attendee.email if attendee else None) or "",
-                (attendee.company if attendee else None) or "",
-                result.business_location or "",
-                result.completed_at.isoformat() if result.completed_at else "",
+                csv_safe(event.title),
+                csv_safe(attendee.full_name if attendee else "Anonymous"),
+                csv_safe((attendee.email if attendee else None) or ""),
+                csv_safe((attendee.company if attendee else None) or ""),
+                csv_safe(result.business_location or ""),
+                csv_safe(result.completed_at.isoformat() if result.completed_at else ""),
             ]
-            + [str(answers.get(qid, "")) for qid in question_keys]
+            + [csv_safe(answers.get(qid, "")) for qid in question_keys]
         )
     output.seek(0)
     return StreamingResponse(

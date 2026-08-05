@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.api.events import get_visible_event
 from app.core.config import settings
+from app.core.rate_limit import PublicRateLimit
 from app.db.session import get_db
 from app.models.training_event import TrainingEvent
 from app.models.user import User
@@ -44,9 +45,15 @@ def submit_checkin(
     token: str,
     payload: PublicCheckinSubmission,
     db: Session = Depends(get_db),
+    _rate_limit: None = Depends(PublicRateLimit("checkin", "token")),
 ) -> dict:
     """Self-service attendance: an attendee scans the QR (or opens the link) and
-    records their own attendance — works for online or in-person events."""
+    records their own attendance — works for online or in-person events.
+
+    Unauthenticated by design (the token is printed on a QR code), so it is
+    rate limited per caller + token: the token is public, and every accepted
+    call writes a row into the official attendance record.
+    """
     event = get_checkin_event(db, token)
     attendee = match_or_create_attendee(db, event.id, payload.full_name, str(payload.email))
     link = get_or_create_link(db, event.id, attendee.id)
