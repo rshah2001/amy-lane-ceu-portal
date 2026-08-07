@@ -20,17 +20,26 @@ class UserOut(ORMModel):
     created_at: datetime
 
 
+# One definition of "an acceptable password", shared by every route that sets
+# one, so the rules cannot drift apart between admin-creates-user, change-own,
+# and reset-by-token.
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 128
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     full_name: str = Field(min_length=2, max_length=255)
     role: Literal["admin", "presenter"] = "presenter"
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
 
 
 class UserUpdate(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=255)
     role: Literal["admin", "presenter"] | None = None
-    password: str | None = Field(default=None, min_length=8, max_length=128)
+    password: str | None = Field(
+        default=None, min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH
+    )
     is_active: bool | None = None
 
 
@@ -43,6 +52,52 @@ class TokenResponse(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    """Change your own password. The current one is required as proof of
+    possession: a borrowed session must not be enough to lock the owner out."""
+
+    current_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    # Bounded so a megabyte of "token" is a 422 rather than a hash of a
+    # megabyte. 16 is comfortably below the 43 characters a real token has.
+    token: str = Field(min_length=16, max_length=256)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
+
+class MessageOut(BaseModel):
+    """A bare acknowledgement, for routes whose answer must not vary."""
+
+    detail: str
+
+
+class PasswordResetLinkOut(BaseModel):
+    """What an admin gets back after starting a reset for someone else.
+
+    The link is returned to the admin as well as emailed, on purpose. The
+    workflow this fixes is a presenter who cannot log in and whose address may
+    itself be the problem, so an admin who can only say "check your email" is
+    back where they started. It grants the admin nothing they did not already
+    have -- ``PATCH /users/{id}`` already lets them set the password outright --
+    and unlike that, it leaves the account's password known only to its owner.
+    """
+
+    user_id: int
+    email: str
+    reset_url: str
+    expires_at: datetime
+    emailed: bool
+    # Set when the email could not be delivered, so the admin knows the link in
+    # this response is the only copy that exists.
+    email_error: str | None = None
 
 
 class TestQuestionIn(BaseModel):
@@ -75,25 +130,48 @@ class SurveyTemplateUpdate(BaseModel):
     questions: list[SurveyQuestionIn]
 
 
+# Every event field below is bounded to the width of the column it is stored
+# in (see app.models.training_event). Without these the database constraint is
+# the only thing enforcing the limit, and it enforces it by raising at flush
+# time -- which reaches the client as a bare 500 with no indication of which
+# field was too long. Keep these in step with the model: a widened column with
+# a stale bound here is a needless 422, and a narrowed one is a 500 again.
+EVENT_TITLE_MAX = 255  # TrainingEvent.title String(255)
+EVENT_NAME_MAX = 255  # location / presenter_name / course_instructor / certificate_title
+EVENT_TYPE_MAX = 80  # TrainingEvent.event_type String(80)
+EVENT_MODE_MAX = 30  # TrainingEvent.test_mode / survey_mode String(30)
+EVENT_URL_MAX = 1000  # TrainingEvent.post_test_url / external_survey_url String(1000)
+# TrainingEvent.ceu_hours is Numeric(6, 2): four digits before the decimal
+# point, so 9999.99 is the largest value the column can hold. Anything above it
+# is a numeric field overflow at flush time. The scale is deliberately NOT
+# constrained here -- Postgres rounds 1.005 to 1.01 rather than failing, so
+# extra decimal places are harmless and rejecting them would only be pedantry.
+EVENT_CEU_HOURS_MAX = Decimal("9999.99")
+
+
 class EventCreate(BaseModel):
-    title: str = Field(min_length=2, max_length=255)
+    title: str = Field(min_length=2, max_length=EVENT_TITLE_MAX)
+    # description is stored as TEXT, which has no length limit, so it is
+    # deliberately left unbounded.
     description: str | None = None
     event_date: date
-    ceu_hours: Decimal = Field(default=Decimal("1.00"), gt=0)
-    location: str | None = None
-    presenter_name: str | None = None
-    course_instructor: str | None = None
-    event_type: str = "lunch_and_learn"
-    post_test_url: str | None = None
-    test_mode: str = "external"
+    ceu_hours: Decimal = Field(default=Decimal("1.00"), gt=0, le=EVENT_CEU_HOURS_MAX)
+    location: str | None = Field(default=None, max_length=EVENT_NAME_MAX)
+    presenter_name: str | None = Field(default=None, max_length=EVENT_NAME_MAX)
+    course_instructor: str | None = Field(default=None, max_length=EVENT_NAME_MAX)
+    event_type: str = Field(default="lunch_and_learn", max_length=EVENT_TYPE_MAX)
+    post_test_url: str | None = Field(default=None, max_length=EVENT_URL_MAX)
+    test_mode: str = Field(default="external", max_length=EVENT_MODE_MAX)
     # Defaults to True so an event created without saying otherwise keeps
     # gating CEU credit on a passed post-test.
     test_required: bool = True
     test_questions: list[TestQuestionIn] = Field(default_factory=list)
-    survey_mode: str = "internal"
+    survey_mode: str = Field(default="internal", max_length=EVENT_MODE_MAX)
     survey_required: bool = False
-    external_survey_url: str | None = None
-    certificate_title: str = "Certificate of Completion"
+    external_survey_url: str | None = Field(default=None, max_length=EVENT_URL_MAX)
+    certificate_title: str = Field(
+        default="Certificate of Completion", max_length=EVENT_NAME_MAX
+    )
     assigned_presenter_id: int | None = None
 
 
@@ -101,22 +179,22 @@ class EventUpdate(BaseModel):
     """Partial update for an event: every field optional; only fields the
     client explicitly sends (``exclude_unset``) are applied."""
 
-    title: str | None = Field(default=None, min_length=2, max_length=255)
+    title: str | None = Field(default=None, min_length=2, max_length=EVENT_TITLE_MAX)
     description: str | None = None
     event_date: date | None = None
-    ceu_hours: Decimal | None = Field(default=None, gt=0)
-    location: str | None = None
-    presenter_name: str | None = None
-    course_instructor: str | None = None
-    event_type: str | None = None
-    post_test_url: str | None = None
-    test_mode: str | None = None
+    ceu_hours: Decimal | None = Field(default=None, gt=0, le=EVENT_CEU_HOURS_MAX)
+    location: str | None = Field(default=None, max_length=EVENT_NAME_MAX)
+    presenter_name: str | None = Field(default=None, max_length=EVENT_NAME_MAX)
+    course_instructor: str | None = Field(default=None, max_length=EVENT_NAME_MAX)
+    event_type: str | None = Field(default=None, max_length=EVENT_TYPE_MAX)
+    post_test_url: str | None = Field(default=None, max_length=EVENT_URL_MAX)
+    test_mode: str | None = Field(default=None, max_length=EVENT_MODE_MAX)
     test_required: bool | None = None
     test_questions: list[TestQuestionIn] | None = None
-    survey_mode: str | None = None
+    survey_mode: str | None = Field(default=None, max_length=EVENT_MODE_MAX)
     survey_required: bool | None = None
-    external_survey_url: str | None = None
-    certificate_title: str | None = None
+    external_survey_url: str | None = Field(default=None, max_length=EVENT_URL_MAX)
+    certificate_title: str | None = Field(default=None, max_length=EVENT_NAME_MAX)
     assigned_presenter_id: int | None = None
     survey_questions: list[SurveyQuestionIn] | None = None
     # Admin override for the workflow stage, including moving an event out of
@@ -194,6 +272,61 @@ class ComplianceRow(BaseModel):
     # kept for the retention period, so the UI has to be able to tell a live
     # certificate from a revoked one rather than inferring it from absence.
     certificate_revoked_at: datetime | None = None
+
+
+# Attendee.full_name is String(255); the correction endpoint writes the same
+# column the import path does, so it carries the same bound.
+ATTENDEE_NAME_MAX = 255
+CORRECTION_REASON_MAX = 500
+
+
+class AttendeeCorrection(BaseModel):
+    """Fix a mistyped attendee email and/or name.
+
+    Both fields are optional and at least one must be present, so an admin can
+    correct an address without having to restate a name that is already right.
+    """
+
+    email: EmailStr | None = None
+    full_name: str | None = Field(default=None, min_length=2, max_length=ATTENDEE_NAME_MAX)
+    # Free text recorded in the audit entry. Optional, but this edits a
+    # compliance record, so "read off the sign-in sheet as .con" is worth
+    # keeping next to the before/after values.
+    reason: str | None = Field(default=None, max_length=CORRECTION_REASON_MAX)
+
+    @field_validator("email", "full_name", "reason", mode="before")
+    @classmethod
+    def blank_to_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+    @model_validator(mode="after")
+    def _require_a_change(self) -> "AttendeeCorrection":
+        if self.email is None and self.full_name is None:
+            raise ValueError("Provide an email address, a name, or both")
+        return self
+
+
+class AttendeeCorrectionOut(BaseModel):
+    """What the correction actually did, per event the attendee is on."""
+
+    attendee_id: int
+    full_name: str
+    email: str | None
+    # Field names that actually changed value; empty when the request restated
+    # what was already stored.
+    changed: list[str] = Field(default_factory=list)
+    # Events whose eligibility was re-derived as a result.
+    events_recalculated: list[int] = Field(default_factory=list)
+    # EventAttendee ids that were not eligible before this correction and are
+    # now -- the point of the whole exercise, so it is reported explicitly
+    # rather than left for the admin to spot by reloading a roster.
+    newly_eligible: list[int] = Field(default_factory=list)
+    # Certificate numbers whose stored name was corrected and PDF re-rendered.
+    # Only ever undelivered certificates; see the endpoint for why.
+    certificates_updated: list[str] = Field(default_factory=list)
 
 
 class ApprovalRequest(BaseModel):

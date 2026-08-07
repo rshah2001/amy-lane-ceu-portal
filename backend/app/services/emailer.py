@@ -5,6 +5,7 @@ import smtplib
 import ssl
 import urllib.error
 import urllib.request
+from datetime import datetime
 from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
@@ -209,6 +210,35 @@ def send_invite_email(event: TrainingEvent, attendee_name: str, recipient: str) 
     lines.extend(f"- {label}: {url}" for label, url in actions)
     lines.extend(["", "Thank you."])
     return _deliver(recipient, f"Action needed for your {event.title} certificate", "\n".join(lines))
+
+
+def send_password_reset_email(
+    recipient: str, full_name: str, reset_url: str, expires_at: datetime
+) -> str:
+    """Send somebody the link that lets them set a new portal password.
+
+    The link is the whole message. It is deliberately not accompanied by the
+    old password, a temporary one, or any other credential -- there is nothing
+    in this body that is worth anything after the link is used once.
+    """
+    hours = settings.password_reset_ttl_hours
+    body = "\n".join(
+        [
+            f"Hello {full_name},",
+            "",
+            "A password reset was requested for your CEU portal account. "
+            "Open the link below to choose a new password:",
+            "",
+            reset_url,
+            "",
+            f"The link can be used once and expires in {hours} hours "
+            f"({expires_at:%Y-%m-%d %H:%M} UTC).",
+            "",
+            "If you did not ask for this, you can ignore this email — your "
+            "password has not been changed.",
+        ]
+    )
+    return _deliver(recipient, "Reset your CEU portal password", body)
 
 
 def send_certificate_email(

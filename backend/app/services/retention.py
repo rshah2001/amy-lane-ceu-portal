@@ -42,12 +42,13 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.clock import utc_today
 from app.core.config import settings
 from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
@@ -88,7 +89,7 @@ def is_retained(event: TrainingEvent, certificate: Certificate, today: date | No
     certificate is retained for exactly as long as a live one, which is the
     point of revoking instead of deleting.
     """
-    return (today or date.today()) < retained_until(event, [certificate])
+    return (today or utc_today()) < retained_until(event, [certificate])
 
 
 def retained_until(event: TrainingEvent, certificates: list[Certificate]) -> date:
@@ -136,7 +137,7 @@ def retention_block(db: Session, event: TrainingEvent, today: date | None = None
     An event with no issued certificate carries no retention obligation (a
     draft, a cancelled session, a mistake) and stays freely deletable.
     """
-    today = today or date.today()
+    today = today or utc_today()
     certificates = _event_certificates(db, event.id)
     issued = [certificate for certificate in certificates if is_issued(certificate)]
     if not issued:
@@ -231,7 +232,7 @@ def find_expired_events(db: Session, today: date | None = None) -> list[tuple[Tr
     each surviving candidate is then re-checked against its certificates' issue
     dates, so a certificate issued late keeps its event alive.
     """
-    today = today or date.today()
+    today = today or utc_today()
     cutoff = _add_years(today, -settings.retention_years)
     candidates = list(
         db.scalars(
@@ -262,7 +263,7 @@ def purge_expired(
     fact that a record existed and was destroyed under the retention policy is
     itself retained.
     """
-    today = today or date.today()
+    today = today or utc_today()
     report = PurgeReport(dry_run=not apply, run_on=today, retention_years=settings.retention_years)
     expired = find_expired_events(db, today)
 
@@ -332,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    as_of = date.fromisoformat(args.as_of) if args.as_of else datetime.now(timezone.utc).date()
+    as_of = date.fromisoformat(args.as_of) if args.as_of else utc_today()
     # Imported here so the module stays importable (and testable) without
     # opening a database connection.
     from app.db.session import SessionLocal

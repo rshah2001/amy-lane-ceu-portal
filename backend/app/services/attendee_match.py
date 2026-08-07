@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from app.models.attendee import Attendee
 from app.models.event_attendee import EventAttendee
 from app.services.identity import (
+    NAME_PART_MAX_LENGTH,
     core_name,
     humanize_name,
     is_valid_email,
@@ -42,6 +43,25 @@ from app.services.identity import (
     normalize_name,
     split_name,
 )
+
+# Column widths on Attendee. Every attendee in the system is written through
+# this module, from public form submissions *and* from uploaded spreadsheets,
+# and a spreadsheet cell has no length limit at all. Clipping here is what
+# stands between a pathological cell and a bare 500 at flush time; the values
+# clipped are descriptive (a company, a licence number, a display name), never
+# the email, which is the identity key and is rejected outright when it is too
+# long to be a real address (see identity.normalize_email).
+FULL_NAME_MAX_LENGTH = 255
+EMAIL_MAX_LENGTH = 255
+COMPANY_MAX_LENGTH = 255
+LICENSE_NUMBER_MAX_LENGTH = 120
+
+
+def _fit(value: str | None, limit: int) -> str | None:
+    """Clip a value to the width of the column it is about to be stored in."""
+    if value is None:
+        return None
+    return value[:limit]
 
 
 class EventRoster:
@@ -279,21 +299,23 @@ def match_or_create_attendee(
             if roster is not None:
                 roster.add_attendee(attendee)
         if company and not attendee.company:
-            attendee.company = company
+            attendee.company = _fit(company, COMPANY_MAX_LENGTH)
         if license_number and not attendee.license_number:
-            attendee.license_number = license_number
+            attendee.license_number = _fit(license_number, LICENSE_NUMBER_MAX_LENGTH)
         return attendee
 
     split_first, split_last = split_name(full_name)
     attendee = Attendee(
-        first_name=first_name or split_first,
-        last_name=last_name or split_last,
-        full_name=full_name,
-        normalized_name=norm_name,
-        email=norm_email or email,
+        first_name=_fit(first_name or split_first, NAME_PART_MAX_LENGTH),
+        last_name=_fit(last_name or split_last, NAME_PART_MAX_LENGTH),
+        full_name=_fit(full_name, FULL_NAME_MAX_LENGTH),
+        normalized_name=_fit(norm_name, FULL_NAME_MAX_LENGTH),
+        # norm_email is already bounded by normalize_email; the raw fallback is
+        # an unusable value kept only so the roster shows what the file said.
+        email=norm_email or _fit(email, EMAIL_MAX_LENGTH),
         normalized_email=norm_email,
-        company=company,
-        license_number=license_number,
+        company=_fit(company, COMPANY_MAX_LENGTH),
+        license_number=_fit(license_number, LICENSE_NUMBER_MAX_LENGTH),
     )
     db.add(attendee)
     db.flush()

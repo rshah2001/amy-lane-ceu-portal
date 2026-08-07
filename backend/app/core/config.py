@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     # certificates stays well under this; enumerating certificate numbers does
     # not.
     public_verify_rate_limit: int = 60
+    # Password reset. Both endpoints are unauthenticated: "email me a link" is
+    # an unauthenticated write (it sends mail and mints a credential), and
+    # "here is my token" is an unauthenticated guess at one. A person resetting
+    # their own password does it once; this budget is hostile to anything else.
+    password_reset_rate_limit: int = 5
+    # How long a reset link stays usable. Presenters log in roughly twice a
+    # year and an admin may have to relay the link by phone, so a same-day
+    # window is too short to be workable; a token that outlives the day it was
+    # asked for is a standing credential.
+    password_reset_ttl_hours: int = 24
     survey_ai_enabled: bool = False
     survey_ai_model: str = "claude-opus-4-8"
     anthropic_api_key: str | None = None

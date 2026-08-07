@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.event_attendee import EventAttendee
 from app.services.identity import is_valid_email
@@ -74,9 +74,30 @@ def lifecycle_status(link: EventAttendee) -> str:
 
 
 def recalculate_event(db: Session, event_id: int) -> list[EventAttendee]:
+    """Re-derive eligibility for every attendee on one event.
+
+    This runs on the hot paths -- every public check-in, post-test and survey
+    submission calls it, as does every compliance review -- so it is loaded
+    eagerly on purpose. ``evaluate_link`` reads ``link.attendee.email`` and
+    ``link.event``; without the eager loads that is one lazy SELECT per link,
+    which measured at 207 statements for a single check-in on a 200-person
+    event. ``selectinload`` fetches all the attendees in one extra query
+    instead, taking the same request to a handful of statements regardless of
+    roster size.
+
+    ``event`` is eager-loaded too. Every link here shares one event, so the
+    identity map already collapsed it to a single lazy query -- but that query
+    fired from inside the loop, which meant the cost of this function depended
+    on whether the caller happened to have the event loaded already. Stating it
+    keeps the query count fixed and independent of the caller.
+    """
     links = list(
         db.scalars(
             select(EventAttendee)
+            .options(
+                selectinload(EventAttendee.attendee),
+                selectinload(EventAttendee.event),
+            )
             .where(EventAttendee.event_id == event_id)
             .order_by(EventAttendee.id)
         )

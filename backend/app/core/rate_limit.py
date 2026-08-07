@@ -92,8 +92,16 @@ class PublicRateLimiter:
 # classroom needs to check in, and vice versa.
 public_write_limiter = PublicRateLimiter("public_write_rate_limit")
 public_verify_limiter = PublicRateLimiter("public_verify_rate_limit")
+# And a third, much tighter one for the password-reset endpoints. Both of them
+# are unauthenticated: requesting a link sends mail to an address the caller
+# names (a mail-bomb amplifier, and a way to probe which addresses exist), and
+# submitting a token is a guess at a live credential. Neither is something a
+# real person does more than a handful of times, and neither shares a budget
+# with the classroom endpoints -- a room full of attendees checking in must not
+# be able to exhaust the reset budget, or the other way round.
+password_reset_limiter = PublicRateLimiter("password_reset_rate_limit")
 
-ALL_PUBLIC_LIMITERS = (public_write_limiter, public_verify_limiter)
+ALL_PUBLIC_LIMITERS = (public_write_limiter, public_verify_limiter, password_reset_limiter)
 
 
 def reset_public_rate_limits() -> None:

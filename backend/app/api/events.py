@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_admin
+from app.core.clock import utc_today
 from app.db.session import get_db
 from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
@@ -56,10 +57,14 @@ def dashboard(
 ) -> DashboardStats:
     event_ids = visible_event_query(current_user).with_only_columns(TrainingEvent.id)
     total_events = db.scalar(select(func.count()).select_from(event_ids.subquery())) or 0
+    # "Upcoming" is a date boundary the admin sees on the dashboard, so it is
+    # taken in UTC rather than in whatever timezone the host happens to run in
+    # (see app.core.clock): an event must not stop counting as upcoming purely
+    # because the API was redeployed onto a differently-configured machine.
     upcoming_events = db.scalar(
         select(func.count()).select_from(
             visible_event_query(current_user)
-            .where(TrainingEvent.event_date >= date.today())
+            .where(TrainingEvent.event_date >= utc_today())
             .with_only_columns(TrainingEvent.id)
             .subquery()
         )
@@ -145,8 +150,11 @@ def dashboard_charts(
         .join(EventAttendee)
         .where(EventAttendee.event_id.in_(event_ids), Certificate.sent_at.is_not(None))
     )
+    # Certificate sent_at values are stored timezone-aware in UTC, so the
+    # six-month window they are bucketed into is anchored in UTC too; a
+    # host-local "today" here would slide the whole window against the data.
     monthly = Counter(dt.strftime("%Y-%m") for dt in sent_dates if dt)
-    today = date.today()
+    today = utc_today()
     months: list[ChartBucket] = []
     for offset in range(5, -1, -1):
         month = (today.month - offset - 1) % 12 + 1

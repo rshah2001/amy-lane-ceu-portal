@@ -18,6 +18,16 @@ def normalize_name(value: str | None) -> str:
     return " ".join(re.sub(r"[\W_]+", " ", unaccented.casefold()).split())
 
 
+# RFC 5321 caps a deliverable address at 254 characters, and the columns that
+# hold one (Attendee.email, Attendee.normalized_email) are String(255). A
+# longer string is not an address anybody can be reached at, so it is treated
+# like any other unusable value below. It also has to be rejected *here*: a
+# spreadsheet cell of arbitrary length otherwise reached the database as a
+# matching key and failed the column width, which surfaced as a bare 500 on an
+# upload rather than as a row-level parse note.
+MAX_EMAIL_LENGTH = 254
+
+
 def normalize_email(value: str | None) -> str | None:
     if not value:
         return None
@@ -26,6 +36,8 @@ def normalize_email(value: str | None) -> str | None:
     # Only match on plausible addresses; junk like "n/a" or "name_at_host.com"
     # must never become a matching key that merges unrelated attendees.
     if "@" not in candidate:
+        return None
+    if len(candidate) > MAX_EMAIL_LENGTH:
         return None
     return candidate or None
 
@@ -52,8 +64,17 @@ def humanize_name(value: str | None) -> str:
     return value
 
 
+# Attendee.first_name / last_name are String(120) while full_name is
+# String(255), so one very long token (OCR noise, or a whole sentence pasted
+# into a name column) overflows the narrower columns even when the name it came
+# from fits its own. These two are a convenience split for reporting and search;
+# full_name is the authoritative value, so clipping them is preferable to
+# failing the row that carries the person.
+NAME_PART_MAX_LENGTH = 120
+
+
 def split_name(full_name: str) -> tuple[str | None, str | None]:
-    parts = full_name.strip().split()
+    parts = [part[:NAME_PART_MAX_LENGTH] for part in full_name.strip().split()]
     if not parts:
         return None, None
     if len(parts) == 1:
