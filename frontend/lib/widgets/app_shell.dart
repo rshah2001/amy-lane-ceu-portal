@@ -48,20 +48,44 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
-  List<_NavItem> get _navItems => [
+  /// Navigation grouped by what the reader is trying to do.
+  ///
+  /// An admin saw ten flat destinations in one list, which gives no clue that
+  /// "Certificate Center" is where today's work is and "System Health" is not.
+  /// The groups are: the work itself, the records you look things up in, and
+  /// administration. A presenter has four destinations and no need of
+  /// scaffolding, so they see the same flat list they always did — headings
+  /// over groups of one would be noise.
+  List<_NavGroup> get _navGroups {
+    if (!widget.session.user!.isAdmin) {
+      return [_NavGroup(null, _presenterItems)];
+    }
+    return [
+      _NavGroup('Workflow', [
         const _NavItem('/dashboard', 'Dashboard', Icons.space_dashboard_outlined),
         const _NavItem('/events', 'Events', Icons.event_note_outlined),
-        const _NavItem('/attendees', 'Attendee Search', Icons.person_search_outlined),
-        if (widget.session.user!.isAdmin) ...[
-          const _NavItem('/certificates', 'Certificate Center', Icons.workspace_premium_outlined),
-          const _NavItem('/survey-responses', 'Survey Responses', Icons.rate_review_outlined),
-          _NavItem('/notifications', 'Notifications', Icons.notifications_outlined, badgeCount: unreadNotifications),
-          const _NavItem('/reports', 'Audit Reports', Icons.assessment_outlined),
-          const _NavItem('/system', 'System Health', Icons.monitor_heart_outlined),
-          const _NavItem('/users', 'Users', Icons.group_outlined),
-        ],
-        const _NavItem('/settings', 'Settings', Icons.settings_outlined),
-      ];
+        const _NavItem('/certificates', 'Certificate Center', Icons.workspace_premium_outlined),
+        _NavItem('/notifications', 'Notifications', Icons.notifications_outlined, badgeCount: unreadNotifications),
+      ]),
+      const _NavGroup('Records', [
+        _NavItem('/attendees', 'Attendee Search', Icons.person_search_outlined),
+        _NavItem('/survey-responses', 'Survey Responses', Icons.rate_review_outlined),
+        _NavItem('/reports', 'Audit Reports', Icons.assessment_outlined),
+      ]),
+      const _NavGroup('Administration', [
+        _NavItem('/users', 'Users', Icons.group_outlined),
+        _NavItem('/system', 'System Health', Icons.monitor_heart_outlined),
+        _NavItem('/settings', 'Settings', Icons.settings_outlined),
+      ]),
+    ];
+  }
+
+  static const _presenterItems = [
+    _NavItem('/dashboard', 'Dashboard', Icons.space_dashboard_outlined),
+    _NavItem('/events', 'Events', Icons.event_note_outlined),
+    _NavItem('/attendees', 'Attendee Search', Icons.person_search_outlined),
+    _NavItem('/settings', 'Settings', Icons.settings_outlined),
+  ];
 
   /// Sidebar path this location belongs to, so drill-down pages keep their
   /// section highlighted (e.g. /events/6/uploads highlights Events).
@@ -119,7 +143,7 @@ class _AppShellState extends State<AppShell> {
       drawer: compact
           ? Drawer(
               child: _Navigation(
-                items: _navItems,
+                groups: _navGroups,
                 selected: selectedPath,
                 session: widget.session,
               ),
@@ -131,7 +155,7 @@ class _AppShellState extends State<AppShell> {
             SizedBox(
               width: 250,
               child: _Navigation(
-                items: _navItems,
+                groups: _navGroups,
                 selected: selectedPath,
                 session: widget.session,
               ),
@@ -226,12 +250,12 @@ class _SkipToContentLinkState extends State<_SkipToContentLink> {
 
 class _Navigation extends StatelessWidget {
   const _Navigation({
-    required this.items,
+    required this.groups,
     required this.selected,
     required this.session,
   });
 
-  final List<_NavItem> items;
+  final List<_NavGroup> groups;
   final String selected;
   final SessionController session;
 
@@ -274,14 +298,34 @@ class _Navigation extends StatelessWidget {
                     horizontal: Space.xs + 2,
                   ),
                   children: [
-                    for (final item in items)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: Space.xxs),
-                        child: _NavTile(
-                          item: item,
-                          isSelected: selected == item.path,
+                    for (final group in groups) ...[
+                      if (group.label != null)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(Space.sm + 2, Space.md, Space.sm, Space.xxs),
+                          // A heading in the semantics tree too, so a screen
+                          // reader user can jump between sections rather than
+                          // arrowing through all ten destinations.
+                          child: Semantics(
+                            header: true,
+                            child: Text(
+                              group.label!.toUpperCase(),
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: colors.onNavMuted,
+                                letterSpacing: 0.8,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
+                      for (final item in group.items)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: Space.xxs),
+                          child: _NavTile(
+                            item: item,
+                            isSelected: selected == item.path,
+                          ),
+                        ),
+                    ],
                   ],
                 ),
               ),
@@ -435,6 +479,14 @@ class _CountChip extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A titled run of navigation destinations. A null [label] renders the items
+/// with no heading, which is what the presenter's short list wants.
+class _NavGroup {
+  const _NavGroup(this.label, this.items);
+  final String? label;
+  final List<_NavItem> items;
 }
 
 class _NavItem {
