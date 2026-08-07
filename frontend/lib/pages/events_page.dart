@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
+import '../widgets/portal_table.dart';
 
 class EventsPage extends StatefulWidget {
   const EventsPage({super.key, required this.session, required this.onOpen});
@@ -129,41 +130,69 @@ class _EventsPageState extends State<EventsPage> {
                                     ],
                                   ),
                                 )
-                              : SingleChildScrollView(
-                                  child: SingleChildScrollView(
-                                    scrollDirection: Axis.horizontal,
-                                    child: DataTable(
-                                      columns: [
-                                        const DataColumn(label: Text('Event')),
-                                        const DataColumn(label: Text('Date')),
-                                        const DataColumn(label: Text('Location')),
-                                        const DataColumn(label: Text('Presenter')),
-                                        const DataColumn(label: Text('Status')),
-                                        DataColumn(label: Semantics(label: 'Open', child: const Text(''))),
-                                      ],
-                                      rows: events!
-                                          .map(
-                                            (event) => DataRow(
-                                              cells: [
-                                                DataCell(ConstrainedBox(
-                                                  constraints: const BoxConstraints(minWidth: 280, maxWidth: 380),
-                                                  child: Text(
-                                                    event.title,
-                                                    style: theme.textTheme.bodyMedium
-                                                        ?.copyWith(fontWeight: FontWeight.w600),
-                                                  ),
-                                                )),
-                                                DataCell(Text(formatDate(event.eventDate))),
-                                                DataCell(Text(event.location ?? 'Remote / TBD')),
-                                                DataCell(Text(event.presenterName ?? 'Not assigned')),
-                                                DataCell(_statusBadge(event.status)),
-                                                DataCell(IconButton(tooltip: 'Open ${event.title}', onPressed: () => widget.onOpen(event), icon: const Icon(Icons.arrow_forward))),
-                                              ],
-                                            ),
-                                          )
-                                          .toList(),
+                              : PortalTable<TrainingEvent>(
+                                  columns: [
+                                    TableColumn<TrainingEvent>(
+                                      label: 'Event',
+                                      width: 280,
+                                      flex: 2,
+                                      sortValue: (event) => event.title,
+                                      cell: (context, event) => Text(
+                                        event.title,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                                      ),
                                     ),
-                                  ),
+                                    TableColumn<TrainingEvent>(
+                                      label: 'Date',
+                                      width: 130,
+                                      // Sorts on the DateTime, not its rendered
+                                      // text, or "Mar 3" would file under M.
+                                      sortValue: (event) => event.eventDate,
+                                      cell: (context, event) => Text(formatDate(event.eventDate)),
+                                    ),
+                                    TableColumn<TrainingEvent>(
+                                      label: 'Location',
+                                      width: 170,
+                                      flex: 1,
+                                      sortValue: (event) => event.location,
+                                      cell: (context, event) => Text(event.location ?? 'Remote / TBD', overflow: TextOverflow.ellipsis),
+                                    ),
+                                    TableColumn<TrainingEvent>(
+                                      label: 'Presenter',
+                                      width: 170,
+                                      flex: 1,
+                                      sortValue: (event) => event.presenterName,
+                                      cell: (context, event) => Text(event.presenterName ?? 'Not assigned', overflow: TextOverflow.ellipsis),
+                                    ),
+                                    TableColumn<TrainingEvent>(
+                                      label: 'Status',
+                                      width: 180,
+                                      sortValue: (event) => eventStatusDisplay(event.status).$1,
+                                      cell: (context, event) => _statusBadge(event.status),
+                                    ),
+                                    TableColumn<TrainingEvent>(
+                                      label: '',
+                                      width: 64,
+                                      headerIcon: Icons.open_in_new,
+                                      semanticLabel: 'Open',
+                                      cell: (context, event) => IconButton(
+                                        tooltip: 'Open ${event.title}',
+                                        onPressed: () => widget.onOpen(event),
+                                        icon: const Icon(Icons.arrow_forward),
+                                      ),
+                                    ),
+                                  ],
+                                  rows: events!,
+                                  // Newest first: the event you just created or
+                                  // are about to run is the one you came for.
+                                  initialSortColumn: 1,
+                                  initialSortAscending: false,
+                                  rowKey: (event) => event.id,
+                                  rowSemanticLabel: (event) =>
+                                      '${event.title}, ${formatDate(event.eventDate)}, ${eventStatusDisplay(event.status).$1}',
+                                  emptyIcon: Icons.event_busy_outlined,
+                                  emptyMessage: 'No events match',
                                 ),
                 ),
               ),
