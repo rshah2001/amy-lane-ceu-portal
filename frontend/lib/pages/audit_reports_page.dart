@@ -18,6 +18,8 @@ class _AuditReportsPageState extends State<AuditReportsPage> with LatestRequest 
   List<Map<String, dynamic>>? logs;
   Map<String, dynamic>? insights;
   List<Map<String, dynamic>> columns = [];
+  Map<int, String> actorNames = {};
+  Map<int, String> eventTitles = {};
   final Set<String> selectedColumns = {};
   String reportEligibility = 'all';
   String? error;
@@ -40,12 +42,26 @@ class _AuditReportsPageState extends State<AuditReportsPage> with LatestRequest 
         widget.session.api.get('/audit-logs?limit=300'),
         widget.session.api.get('/survey-insights'),
         widget.session.api.get('/reports/columns'),
+        // Names for the actor and event ids the log stores. This page is
+        // admin-only, so both are already readable to whoever is here; the log
+        // just doesn't carry them. Without this the audit trail — the artifact
+        // an external reviewer actually reads — says "Actor ID 7".
+        widget.session.api.get('/users'),
+        widget.session.api.get('/events'),
       ]);
       if (request.isCurrent) {
         setState(() {
           logs = (results[0] as List).cast<Map<String, dynamic>>();
           insights = results[1] as Map<String, dynamic>;
           columns = (results[2] as List).cast<Map<String, dynamic>>();
+          actorNames = {
+            for (final user in (results[3] as List).cast<Map<String, dynamic>>())
+              user['id'] as int: (user['full_name'] as String?) ?? user['email'] as String,
+          };
+          eventTitles = {
+            for (final event in (results[4] as List).cast<Map<String, dynamic>>())
+              event['id'] as int: event['title'] as String,
+          };
           if (selectedColumns.isEmpty) {
             selectedColumns.addAll(columns.map((c) => c['key'] as String));
           }
@@ -119,32 +135,78 @@ class _AuditReportsPageState extends State<AuditReportsPage> with LatestRequest 
           cell: (context, log) => Text('${log['entity_type']} #${log['entity_id'] ?? '—'}'),
         ),
         TableColumn<Map<String, dynamic>>(
-          label: 'Event ID',
-          width: 110,
-          numeric: true,
-          sortValue: (log) => log['event_id'] as int?,
-          cell: (context, log) => Text('${log['event_id'] ?? '—'}'),
+          label: 'Event',
+          width: 200,
+          sortValue: _eventLabel,
+          cell: (context, log) => Text(_eventLabel(log), overflow: TextOverflow.ellipsis),
         ),
         TableColumn<Map<String, dynamic>>(
-          label: 'Actor ID',
-          width: 110,
-          numeric: true,
-          sortValue: (log) => log['actor_id'] as int?,
-          cell: (context, log) => Text('${log['actor_id'] ?? 'system'}'),
+          label: 'Who',
+          width: 180,
+          sortValue: _actorLabel,
+          cell: (context, log) => Text(_actorLabel(log), overflow: TextOverflow.ellipsis),
         ),
         TableColumn<Map<String, dynamic>>(
           label: 'Details',
           width: 330,
           // The one column worth spending a wide screen on.
           flex: 1,
-          sortValue: (log) => log['details'].toString(),
+          sortValue: _detailsLabel,
           cell: (context, log) => Text(
-            log['details'].toString(),
+            _detailsLabel(log),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
         ),
       ];
+
+  /// "Spring Refresher (#12)", or just the id when the event has since been
+  /// deleted — which is exactly when an auditor most wants the row.
+  String _eventLabel(Map<String, dynamic> log) {
+    final id = log['event_id'] as int?;
+    if (id == null) return '—';
+    final title = eventTitles[id];
+    return title == null ? 'Event #$id' : '$title (#$id)';
+  }
+
+  /// A person's name, or "System" for the unattended paths (public check-in,
+  /// scheduled work) that legitimately have no actor.
+  String _actorLabel(Map<String, dynamic> log) {
+    final id = log['actor_id'] as int?;
+    if (id == null) return 'System';
+    return actorNames[id] ?? 'Deleted user #$id';
+  }
+
+  /// Renders the details map as prose rather than as a Dart Map literal.
+  ///
+  /// This column used to print `{attendee_id: 5, full_name: Bob Smith}` —
+  /// syntax from the language the portal happens to be written in, in the one
+  /// artifact that exists to be read by somebody outside the project.
+  String _detailsLabel(Map<String, dynamic> log) {
+    final details = log['details'];
+    if (details is! Map || details.isEmpty) return '—';
+    return details.entries
+        .map((entry) => '${_humanizeKey(entry.key.toString())}: ${_formatValue(entry.value)}')
+        .join(' · ');
+  }
+
+  static String _humanizeKey(String key) {
+    final words = key.split('_').where((word) => word.isNotEmpty);
+    if (words.isEmpty) return key;
+    final first = words.first;
+    return [
+      first[0].toUpperCase() + first.substring(1),
+      ...words.skip(1),
+    ].join(' ');
+  }
+
+  static String _formatValue(Object? value) {
+    if (value == null) return 'none';
+    if (value is bool) return value ? 'yes' : 'no';
+    if (value is List) return value.isEmpty ? 'none' : value.join(', ');
+    if (value is Map) return value.entries.map((e) => '${e.key} ${e.value}').join(', ');
+    return value.toString();
+  }
 
   @override
   Widget build(BuildContext context) {
