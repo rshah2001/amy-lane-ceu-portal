@@ -350,6 +350,7 @@ class _UploadsPageState extends State<UploadsPage> {
                   description: type.$4,
                   icon: type.$3,
                   upload: latestFor(type.$1),
+                  known: uploads != null,
                   loading: uploadingType == type.$1,
                   onUpload: () => pickAndUpload(type.$1),
                   onOpen: latestFor(type.$1) == null ? null : () => openUpload(latestFor(type.$1)!),
@@ -387,6 +388,7 @@ class _UploadRow extends StatelessWidget {
     required this.icon,
     required this.upload,
     required this.loading,
+    required this.known,
     required this.onUpload,
     required this.onOpen,
     required this.onShowErrors,
@@ -398,6 +400,15 @@ class _UploadRow extends StatelessWidget {
   final IconData icon;
   final Map<String, dynamic>? upload;
   final bool loading;
+
+  /// Has the upload list actually come back yet?
+  ///
+  /// Without this, `upload == null` collapses two very different situations
+  /// into one badge: "we asked and there is nothing" and "we haven't asked
+  /// yet". The page rendered NOT UPLOADED while the request was still in
+  /// flight, which tells a presenter their sign-in sheet never landed and
+  /// invites them to upload it a second time.
+  final bool known;
   final VoidCallback onUpload;
 
   /// Optional sheet-format picker (attendance / sign-in sheet only).
@@ -510,10 +521,16 @@ class _UploadRow extends StatelessWidget {
             final action = Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                StatusBadge(upload == null ? 'NOT UPLOADED' : errors.isEmpty ? 'PROCESSED' : 'CHECK ERRORS', tone: upload == null ? BadgeTone.neutral : errors.isEmpty ? BadgeTone.success : BadgeTone.warning),
+                if (!known)
+                  const StatusBadge('CHECKING…', tone: BadgeTone.neutral)
+                else
+                  StatusBadge(upload == null ? 'NOT UPLOADED' : errors.isEmpty ? 'PROCESSED' : 'CHECK ERRORS', tone: upload == null ? BadgeTone.neutral : errors.isEmpty ? BadgeTone.success : BadgeTone.warning),
                 const SizedBox(width: Space.xs + 2),
                 OutlinedButton.icon(
-                  onPressed: loading ? null : onUpload,
+                  // Disabled until we know what is already there: uploading
+                  // blind is how a presenter ends up submitting the same sheet
+                  // twice.
+                  onPressed: loading || !known ? null : onUpload,
                   icon: loading
                       ? const SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.upload_file),

@@ -172,9 +172,23 @@ class EventDetailPage extends StatelessWidget {
     }
   }
 
+  /// Is there a post-test the QR code can actually point at?
+  ///
+  /// Must match the server's rule exactly — `checkin.py` and `tests.py` both
+  /// require `test_questions` to be non-empty for an internal test, not just a
+  /// token. Gating on the token alone put a "Download post-test QR" button in
+  /// front of presenters that always failed with "Add internal test
+  /// questions…", an instruction they aren't permitted to act on: the edit
+  /// page redirects them away.
   bool get hasTest =>
-      (event.testMode == 'internal' && event.testToken != null) ||
+      (event.testMode == 'internal' && event.testToken != null && event.testQuestions.isNotEmpty) ||
       (event.testMode == 'external' && event.postTestUrl != null);
+
+  /// An internal post-test that exists but has no questions yet. Distinct from
+  /// "this event has no post-test", because the fix differs: this one needs
+  /// questions added, and only an admin can add them.
+  bool get testAwaitingQuestions =>
+      event.testMode == 'internal' && event.testToken != null && event.testQuestions.isEmpty;
 
   /// Origin the public test/survey pages are served from. The public pages are
   /// part of this same web app, so links share the portal's own address.
@@ -291,6 +305,17 @@ class EventDetailPage extends StatelessWidget {
                               onPressed: () => downloadTestQr(context),
                               icon: const Icon(Icons.qr_code_2),
                               label: Text(event.testMode == 'internal' ? 'Download post-test QR' : 'Download external test QR'),
+                            )
+                          else if (testAwaitingQuestions)
+                            Tooltip(
+                              message: isAdmin
+                                  ? 'Add questions to the post-test before printing its QR code.'
+                                  : 'The post-test has no questions yet. An administrator has been notified.',
+                              child: OutlinedButton.icon(
+                                onPressed: isAdmin ? () => onNavigate('edit') : null,
+                                icon: const Icon(Icons.quiz_outlined),
+                                label: Text(isAdmin ? 'Add post-test questions' : 'Post-test not ready'),
+                              ),
                             ),
                           OutlinedButton.icon(
                             onPressed: () => downloadSurveyQr(context),
