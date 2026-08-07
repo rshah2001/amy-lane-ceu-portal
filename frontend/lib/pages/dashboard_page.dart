@@ -6,6 +6,7 @@ import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/charts.dart';
 import '../widgets/common.dart';
+import '../widgets/portal_table.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({
@@ -245,41 +246,70 @@ class _DashboardPageState extends State<DashboardPage> {
                             : 'No events assigned to you yet — your NMEDA administrator will assign your session before the event date.'),
                       )
                     else
-                      SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: DataTable(
-                          showCheckboxColumn: false,
-                          columns: [
-                            const DataColumn(label: Text('Event')),
-                            const DataColumn(label: Text('Date')),
-                            const DataColumn(label: Text('CEU hours')),
-                            const DataColumn(label: Text('Presenter')),
-                            const DataColumn(label: Text('Status')),
-                            DataColumn(label: Semantics(label: 'Open', child: const Text(''))),
-                          ],
-                          rows: events
-                              .map(
-                                (event) => DataRow(
-                                  onSelectChanged: (_) => openEvent(event),
-                                  cells: [
-                                    DataCell(ConstrainedBox(
-                                      constraints: const BoxConstraints(minWidth: 260, maxWidth: 360),
-                                      child: Text(
-                                        event.title,
-                                        style: theme.textTheme.bodyMedium
-                                            ?.copyWith(fontWeight: FontWeight.w600),
-                                      ),
-                                    )),
-                                    DataCell(Text(formatDate(event.eventDate))),
-                                    DataCell(Text(event.ceuHours.toStringAsFixed(1))),
-                                    DataCell(Text(event.presenterName ?? 'Not assigned')),
-                                    DataCell(_statusBadge(event.status)),
-                                    DataCell(IconButton(tooltip: 'Open ${event.title}', onPressed: () => openEvent(event), icon: const Icon(Icons.arrow_forward))),
-                                  ],
-                                ),
-                              )
-                              .toList(),
-                        ),
+                      // Virtualized rather than paginated, and shrink-wrapped:
+                      // this is a five-row preview inside the page's own
+                      // scroller, so paging controls under it would be
+                      // furniture for a list that never has a second page.
+                      PortalTable<TrainingEvent>(
+                        paging: TablePaging.virtualized,
+                        shrinkWrap: true,
+                        density: TableDensity.compact,
+                        columns: [
+                          TableColumn<TrainingEvent>(
+                            label: 'Event',
+                            width: 260,
+                            flex: 2,
+                            sortValue: (event) => event.title,
+                            cell: (context, event) => Text(
+                              event.title,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                          TableColumn<TrainingEvent>(
+                            label: 'Date',
+                            width: 120,
+                            sortValue: (event) => event.eventDate,
+                            cell: (context, event) => Text(formatDate(event.eventDate)),
+                          ),
+                          TableColumn<TrainingEvent>(
+                            label: 'CEU hours',
+                            width: 110,
+                            numeric: true,
+                            sortValue: (event) => event.ceuHours,
+                            cell: (context, event) => Text(event.ceuHours.toStringAsFixed(1)),
+                          ),
+                          TableColumn<TrainingEvent>(
+                            label: 'Presenter',
+                            width: 160,
+                            flex: 1,
+                            sortValue: (event) => event.presenterName,
+                            cell: (context, event) => Text(event.presenterName ?? 'Not assigned', overflow: TextOverflow.ellipsis),
+                          ),
+                          TableColumn<TrainingEvent>(
+                            label: 'Status',
+                            width: 175,
+                            sortValue: (event) => eventStatusDisplay(event.status).$1,
+                            cell: (context, event) => _statusBadge(event.status),
+                          ),
+                          TableColumn<TrainingEvent>(
+                            label: '',
+                            width: 64,
+                            headerIcon: Icons.open_in_new,
+                            semanticLabel: 'Open',
+                            cell: (context, event) => IconButton(
+                              tooltip: 'Open ${event.title}',
+                              onPressed: () => openEvent(event),
+                              icon: const Icon(Icons.arrow_forward),
+                            ),
+                          ),
+                        ],
+                        rows: events,
+                        rowKey: (event) => event.id,
+                        rowSemanticLabel: (event) =>
+                            '${event.title}, ${formatDate(event.eventDate)}, ${eventStatusDisplay(event.status).$1}',
+                        emptyIcon: Icons.event_note_outlined,
+                        emptyMessage: 'No events yet',
                       ),
                   ],
                 ),
