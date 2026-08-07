@@ -97,6 +97,37 @@ To enable Supabase Storage:
    (`uploads/<event_id>/…`, `certificates/…`), and any file missing from the bucket
    (pre-existing certs) is regenerated or re-uploaded on next write.
 
+## Operational settings
+
+All optional — the defaults are the intended production values. Listed so
+they can be found when something needs tuning, rather than discovered in code.
+
+| Variable | Default | What it controls |
+| --- | --- | --- |
+| `ENVIRONMENT` | `development` | Anything other than exactly `development` makes the app refuse to start on the placeholder `SECRET_KEY`. Set it on every deployed environment, including staging and preview. |
+| `PUBLIC_RATE_LIMIT_ENABLED` | `true` | Abuse controls on the public check-in / post-test / survey / verification routes. |
+| `PUBLIC_WRITE_RATE_LIMIT` | `20` | Public submissions allowed per caller per window. Raise it for a large in-person event where a whole room shares one NAT address. |
+| `PUBLIC_VERIFY_RATE_LIMIT` | `60` | Certificate verification lookups per caller per window. |
+| `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | The window both limits are counted over. |
+| `PASSWORD_RESET_TTL_HOURS` | `24` | How long an emailed reset link stays valid. Single-use regardless. |
+| `RETENTION_YEARS` | `7` | The retention floor. **Read live by both the deletion guard and the purge** — lowering it immediately makes more records deletable, so treat it as a compliance setting, not a tuning knob. |
+
+### Retention purge
+
+Records past `RETENTION_YEARS` are removed by an operator-run command, not by a
+background job. This is deliberate: a scheduler that silently destroys
+compliance records is not something to enable without a person deciding to.
+
+```bash
+python -m app.services.retention            # report what would be purged
+python -m app.services.retention --apply    # actually purge
+```
+
+It is dry-run by default, prints what it would remove, and writes an audit
+entry per purged event. Whoever signs the retention confirmation in
+`docs/data-storage-and-retention-confirmation.md` should agree how often this
+runs, since that document describes it as a periodic review.
+
 ## Moving to a secured tier (before real PII)
 - Paid Render (no sleep, persistent disk) or a VPS with encrypted disk + backups.
 - Managed Postgres with PITR backups; verify the 7-year retention policy with the compliance owner.
