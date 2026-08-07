@@ -87,6 +87,34 @@ AMBIGUOUS_SCORE_MESSAGE = (
 )
 
 
+def sample_scores(values: list[str], limit: int = 6) -> list[str]:
+    """A few distinct unit-less values from the score column, in file order."""
+    seen: list[str] = []
+    for value in values:
+        text = (value or "").strip()
+        if not text or _bare_number(text) is None or text in seen:
+            continue
+        seen.append(text)
+        if len(seen) == limit:
+            break
+    return seen
+
+
+class AmbiguousScoreError(ValueError):
+    """The score column has no unit and could mean two different things.
+
+    Carries the offending values so the caller can show the uploader what is
+    actually in their file. Subclasses ValueError because every existing caller
+    already handles that — this only adds detail, it does not change control
+    flow.
+    """
+
+    def __init__(self, samples: list[str]) -> None:
+        self.samples = samples
+        detail = f" Values found: {', '.join(samples)}." if samples else ""
+        super().__init__(AMBIGUOUS_SCORE_MESSAGE + detail)
+
+
 class EmptyImportError(ValueError):
     """Raised when an import would replace existing results with nothing.
 
@@ -188,7 +216,10 @@ def resolve_score_basis(chosen: str | None, values: list[str]) -> str | None:
         return None
     if any("%" in value for value in values) or any(number > 10 for number in numbers):
         return "percent"
-    raise ValueError(AMBIGUOUS_SCORE_MESSAGE)
+    # Name the values that caused the refusal. The uploader is looking at a
+    # dialog, not at the spreadsheet, and "8, 9, 7.5" is what lets them answer
+    # "out of 10" without going back to Excel to check what is in the column.
+    raise AmbiguousScoreError(sample_scores(values))
 
 
 def describe_score_basis(basis: str | None, chosen: bool) -> str:

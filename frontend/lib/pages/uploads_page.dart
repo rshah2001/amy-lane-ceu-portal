@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -82,6 +84,20 @@ class _UploadsPageState extends State<UploadsPage> {
     );
     final file = result?.files.single;
     if (file?.bytes == null) return;
+    await _send(type, file!.bytes!, file.name);
+  }
+
+  /// Uploads bytes already in hand.
+  ///
+  /// Split out from the file picker so an upload the server bounced for a
+  /// fixable reason can be retried with the answer attached, without making
+  /// the user find the file a second time.
+  Future<void> _send(
+    String type,
+    Uint8List bytes,
+    String filename, {
+    String? scoreBasis,
+  }) async {
     setState(() {
       uploadingType = type;
       error = null;
@@ -89,19 +105,29 @@ class _UploadsPageState extends State<UploadsPage> {
     try {
       final response = await widget.session.api.uploadFile(
         '/events/${widget.event.id}/uploads/$type',
-        file!.bytes!,
-        file.name,
+        bytes,
+        filename,
         // Only the attendance / sign-in sheet has the format picker; leaving
         // it on "Other / not sure" sends no hint, keeping default parsing.
-        fields: type == 'attendance' && sheetFormat != 'other'
-            ? {'sheet_format': sheetFormat}
-            : null,
+        fields: {
+          if (type == 'attendance' && sheetFormat != 'other') 'sheet_format': sheetFormat,
+          if (scoreBasis != null) 'score_basis': scoreBasis,
+        },
       ) as Map<String, dynamic>;
       await load();
       if (mounted) _showUploadFeedback(type, response);
     } catch (exception) {
       if (!mounted) {
         // fall through to the finally block
+      } else if (_isAmbiguousScore(exception)) {
+        // The one refusal the user can answer without touching the file: the
+        // score column has no unit, so the server won't guess. Ask here and
+        // resend the same bytes with the answer, rather than sending them back
+        // to Excel to add "%" to every row.
+        final basis = await _askScoreBasis((exception as ApiException).message);
+        if (basis != null && mounted) {
+          await _send(type, bytes, filename, scoreBasis: basis);
+        }
       } else if (_isNothingImported(exception)) {
         // A file the parser could make nothing of is now a 400 rather than a
         // 201-with-a-notice, because an import that lands no rows must not be
@@ -178,6 +204,112 @@ class _UploadsPageState extends State<UploadsPage> {
             : SnackBarAction(label: 'View details', onPressed: () => _showParseErrors(parseErrors)),
       ));
     }
+  }
+
+  /// Is this the server refusing to guess what a unit-less score column means?
+  bool _isAmbiguousScore(Object exception) =>
+      exception is ApiException &&
+      exception.statusCode == 400 &&
+      exception.message.startsWith('The score column is ambiguous');
+
+  /// The values the server reported, pulled out of its message.
+  ///
+  /// Best-effort: if the wording ever changes the dialog simply shows no
+  /// examples, which is a smaller loss than a parse that throws.
+  List<String> _samplesFrom(String message) {
+    final match = RegExp(r'Values found: ([^.]+)\.').firstMatch(message);
+    if (match == null) return const [];
+    return match.group(1)!.split(',').map((value) => value.trim()).where((v) => v.isNotEmpty).toList();
+  }
+
+  /// Asks what the scores mean, showing the user's own values against each
+  /// reading so the choice is concrete rather than a vocabulary quiz.
+  ///
+  /// Returns the chosen basis, or null if they cancelled. There is deliberately
+  /// no default selection: picking one for them is the guess this whole flow
+  /// exists to avoid, and choosing wrong issues certificates for failed tests.
+  Future<String?> _askScoreBasis(String message) {
+    final samples = _samplesFrom(message);
+    final example = samples.isNotEmpty ? samples.first : '8';
+    final asPercent = double.tryParse(example);
+    String preview(String basis) {
+      if (asPercent == null) return '';
+      final value = switch (basis) {
+        'out_of_10' => asPercent * 10,
+        'out_of_1' => asPercent * 100,
+        _ => asPercent,
+      };
+      final pass = value >= 80 ? 'pass' : 'fail';
+      return '$example becomes ${value.toStringAsFixed(value.truncateToDouble() == value ? 0 : 1)}% — a $pass';
+    }
+
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        final theme = Theme.of(dialogContext);
+        final colors = theme.portal;
+        return AlertDialog(
+          icon: Icon(Icons.help_outline, color: colors.warning, size: 40),
+          title: const Text('What do these scores mean?'),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  samples.isEmpty
+                      ? 'The score column has no "%" or "x/10" on any row, so the same '
+                          'number could be a pass or a fail.'
+                      : 'Your file has scores like ${samples.join(', ')} — with no "%" or '
+                          '"x/10" anywhere, so the same number could be a pass or a fail.',
+                  style: theme.textTheme.bodyMedium,
+                ),
+                const SizedBox(height: Space.sm),
+                Text(
+                  'Pick the right one and the file will be re-read — you do not need to '
+                  'open it again.',
+                  style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
+                ),
+                const SizedBox(height: Space.md),
+                for (final option in const [
+                  ('percent', 'Percentages (0–100)'),
+                  ('out_of_10', 'Out of 10'),
+                  ('out_of_1', 'Fractions of 1'),
+                ]) ...[
+                  OutlinedButton(
+                    onPressed: () => Navigator.pop(dialogContext, option.$1),
+                    style: OutlinedButton.styleFrom(
+                      alignment: Alignment.centerLeft,
+                      minimumSize: const Size(double.infinity, minTapTarget),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(option.$2, style: theme.textTheme.titleSmall),
+                        if (preview(option.$1).isNotEmpty)
+                          Text(
+                            preview(option.$1),
+                            style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: Space.xs),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   /// Is this the backend's "nothing could be imported" refusal?

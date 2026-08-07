@@ -85,6 +85,37 @@ class TestScoreBasisIsPerColumn:
         assert "%" in detail and "x/10" in detail
         assert not compliance_rows_by_name(client, admin.headers, event["id"])
 
+    def test_refusal_names_the_values_it_could_not_read(self, client, admin, event):
+        # The uploader answering this is looking at a dialog, not at the
+        # spreadsheet. Quoting their own values is what lets them choose
+        # "out of 10" without reopening Excel to see what is in the column.
+        response = upload_scores(client, admin.headers, event["id"], AMBIGUOUS_SCORES)
+        detail = response.json()["detail"]
+        assert "Values found:" in detail
+        # Distinct values, in file order, so the list is recognisable as theirs.
+        samples = detail.split("Values found:")[1].strip().rstrip(".")
+        assert samples, detail
+        for value in samples.split(","):
+            assert value.strip() in AMBIGUOUS_SCORES
+
+    def test_the_refused_upload_succeeds_when_the_basis_is_supplied(
+        self, client, admin, event
+    ):
+        # The whole point of naming the values: the same bytes are resent with
+        # the answer attached, so the fix costs a click rather than a trip
+        # through Excel adding "%" to every row.
+        assert upload_scores(client, admin.headers, event["id"], AMBIGUOUS_SCORES).status_code == 400
+        response = upload_scores(
+            client, admin.headers, event["id"], AMBIGUOUS_SCORES, score_basis="out_of_10"
+        )
+        assert response.status_code == 201, response.text
+        rows = compliance_rows_by_name(client, admin.headers, event["id"])
+        assert rows, "the retry should have imported the rows the refusal held back"
+        # 8 under "out of 10" is 80 -- and the response says so, so a wrong
+        # choice is visible rather than silent.
+        notes = [e["message"] for e in response.json()["parse_errors"] if e["row"] == 0]
+        assert any("out of 10" in note for note in notes), notes
+
     def test_percent_column_reads_a_bare_eight_as_eight_percent(self, client, admin, event):
         # One value above 10 settles the column: it is percentages, so an 8 in
         # it is 8% -- a fail -- and must not become 80.
