@@ -20,9 +20,15 @@ from app.models.event_attendee import EventAttendee
 from app.services import storage
 from app.models.survey_result import SurveyResult
 from app.models.test_result import TestResult
-from app.services.attendee_match import get_or_create_link, match_or_create_attendee
+from app.services.attendee_match import EventRoster, get_or_create_link, match_or_create_attendee
 from app.services.compliance import recalculate_event
-from app.services.identity import humanize_name, split_name
+from app.services.identity import (
+    core_name,
+    humanize_name,
+    names_are_variants,
+    normalize_email,
+    split_name,
+)
 
 ALIASES = {
     "full_name": ["full name", "name", "attendee", "participant name", "student name"],
@@ -54,24 +60,83 @@ NO_NAMES_MESSAGE = (
     "No attendee names could be read from this file — check the sheet format "
     'selection or convert it to a spreadsheet (CSV/XLSX) with a "Name" column.'
 )
+# Sibling of NO_NAMES_MESSAGE for the case where names *were* read but every
+# row was rejected. Both mean the same thing to the caller: nothing was
+# imported, so nothing on the event was touched.
+NOTHING_IMPORTED_MESSAGE = (
+    "No rows from this file could be imported, so the results already recorded "
+    "for this event were left unchanged. Fix the row problems listed below and "
+    "upload the file again."
+)
+
+# Score-basis hints the uploader can optionally send with a post-test file,
+# mirroring the sheet_format picker. An explicit choice always beats inference.
+SCORE_BASIS_LABELS = {
+    "percent": "percentages (0-100)",
+    "out_of_10": "scores out of 10 (8 = 80%)",
+    "out_of_1": "fractions of 1 (0.85 = 85%)",
+}
+SCORE_BASES = set(SCORE_BASIS_LABELS)
+
+AMBIGUOUS_SCORE_MESSAGE = (
+    "The score column is ambiguous: every value is between 0 and 10 and none "
+    'says "%" or "x/10", so 8 could mean 8% (a fail) or 8/10 (a pass) and '
+    "guessing would issue certificates for failed tests. Re-upload the file "
+    'with an explicit "%" or "x/10" on every row, or choose the score basis '
+    "(percent, out_of_10 or out_of_1) on the upload."
+)
+
+
+class EmptyImportError(ValueError):
+    """Raised when an import would replace existing results with nothing.
+
+    The destructive reset that precedes an import (clearing scores, deleting
+    file-sourced results) must never run for a file that turns out to import
+    zero rows — that is how a mis-typed re-upload wiped a whole event's scores.
+    Raising instead of returning keeps the caller from recording a successful
+    upload; the rows that failed travel along in ``errors``.
+    """
+
+    def __init__(self, message: str, row_count: int, errors: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.row_count = row_count
+        self.errors = errors
 
 
 def _canonical_header(value: str) -> str:
     return " ".join(value.strip().lower().replace("_", " ").replace("-", " ").split())
 
 
-def _value(row: dict[str, str], field: str) -> str | None:
-    normalized = {_canonical_header(key): (value or "").strip() for key, value in row.items() if key}
+def _normalize_row(row: dict[str, str]) -> dict[str, str]:
+    """Canonical-header view of a row, built once and reused for every lookup."""
+    return {
+        _canonical_header(key): ("" if value is None else str(value).strip())
+        for key, value in row.items()
+        if key
+    }
+
+
+def _lookup(values: dict[str, str], field: str) -> str | None:
     for alias in ALIASES[field]:
-        if alias in normalized and normalized[alias]:
-            return normalized[alias]
+        if values.get(alias):
+            return values[alias]
     return None
 
 
-def _identity(row: dict[str, str]) -> dict[str, str | None]:
-    first = _value(row, "first_name")
-    last = _value(row, "last_name")
-    full = _value(row, "full_name") or " ".join(value for value in [first, last] if value)
+def _has_column(values: dict[str, str], field: str) -> bool:
+    """Whether the file has a column for this field at all (value may be blank).
+
+    Column *presence* and cell *emptiness* mean different things: a survey
+    export with no "Completed" column is itself the list of people who
+    completed it, while a blank cell in a Completed column means they did not.
+    """
+    return any(alias in values for alias in ALIASES[field])
+
+
+def _identity(values: dict[str, str]) -> dict[str, str | None]:
+    first = _lookup(values, "first_name")
+    last = _lookup(values, "last_name")
+    full = _lookup(values, "full_name") or " ".join(value for value in [first, last] if value)
     if not full:
         raise ValueError('A name is required (expected a "Name" or "First/Last Name" column)')
     full = humanize_name(full)
@@ -80,18 +145,71 @@ def _identity(row: dict[str, str]) -> dict[str, str | None]:
         "full_name": full,
         "first_name": first or split_first,
         "last_name": last or split_last,
-        "email": _value(row, "email"),
-        "company": _value(row, "company"),
-        "license_number": _value(row, "license_number"),
+        "email": _lookup(values, "email"),
+        "company": _lookup(values, "company"),
+        "license_number": _lookup(values, "license_number"),
     }
 
 
-def _parse_score(value: str | None) -> Decimal:
-    """Normalize the score formats presenters upload to a 0-100 percentage.
+def _bare_number(value: str) -> Decimal | None:
+    """The numeric value of a cell that states no unit, else None.
 
-    Accepted: a percentage ("85", "85%"), a fraction ("8/10", "17/20"), a
-    score out of 10 ("8", "9.5" — post-tests are 10 questions), or an Excel
-    percent cell that reaches us as its stored fraction ("0.85").
+    A cell carrying "%" or "x/10" says what it means and is parsed on its own
+    terms; only these unit-less cells need a column-wide interpretation.
+    """
+    if "%" in value or "/" in value:
+        return None
+    try:
+        return Decimal(value.strip())
+    except InvalidOperation:
+        return None
+
+
+def resolve_score_basis(chosen: str | None, values: list[str]) -> str | None:
+    """Decide ONCE, for the whole column, what a unit-less score means.
+
+    Deciding per cell is how an 8 meaning 8% became 80.0 — exactly the pass
+    mark — and printed a certificate for a failed test. So:
+
+    - an explicit choice from the uploader always wins;
+    - a "%" anywhere in the column, or any value above 10, makes the whole
+      column percentages;
+    - a column whose values all sit between 0 and 10 with no "%" and no
+      fraction is genuinely ambiguous and is REFUSED, never guessed;
+    - a column with no unit-less values at all needs no basis (None): every
+      cell already says what it means.
+    """
+    if chosen:
+        if chosen not in SCORE_BASES:
+            raise ValueError(f"Unknown score basis: {chosen!r}")
+        return chosen
+    numbers = [number for number in (_bare_number(value) for value in values) if number is not None]
+    if not numbers:
+        return None
+    if any("%" in value for value in values) or any(number > 10 for number in numbers):
+        return "percent"
+    raise ValueError(AMBIGUOUS_SCORE_MESSAGE)
+
+
+def describe_score_basis(basis: str | None, chosen: bool) -> str:
+    source = "as selected on this upload" if chosen else "read from the file"
+    if basis is None:
+        return (
+            "Interpreted scores exactly as written — every row stated its own "
+            'unit ("%" or "x/10").'
+        )
+    return (
+        f"Interpreted scores as {SCORE_BASIS_LABELS[basis]}, {source}. "
+        "Re-upload with the correct score basis if that is not what the file meant."
+    )
+
+
+def _parse_score(value: str | None, basis: str | None = None) -> Decimal:
+    """Normalize one score cell to a 0-100 percentage.
+
+    Accepted: an explicit percentage ("85%"), an explicit fraction ("8/10",
+    "17/20"), or a unit-less number read on the column's ``basis`` (see
+    resolve_score_basis). A unit-less number is never interpreted on its own.
     """
     if value is None:
         raise ValueError(
@@ -106,10 +224,12 @@ def _parse_score(value: str | None) -> Decimal:
         else:
             score = Decimal(text)
             if not is_percent:
-                if 0 < score < 1:
-                    score *= 100
-                elif 0 <= score <= 10:
+                if basis is None:
+                    raise ValueError(AMBIGUOUS_SCORE_MESSAGE)
+                if basis == "out_of_10":
                     score *= 10
+                elif basis == "out_of_1":
+                    score *= 100
     except (InvalidOperation, DivisionByZero) as exc:
         raise ValueError(
             f"Invalid score: {value!r} (expected a percentage like 85%, a fraction like 8/10, or a score out of 10)"
@@ -119,10 +239,42 @@ def _parse_score(value: str | None) -> Decimal:
     return score.quantize(Decimal("0.01"))
 
 
-def _parse_completed(value: str | None) -> bool:
-    if value is None:
+# Words that state an attendee did NOT take part. "n/a" counts: on a survey
+# sheet it is how presenters write "no response", not "yes".
+NOT_COMPLETED_VALUES = {
+    "false",
+    "no",
+    "n",
+    "0",
+    "incomplete",
+    "not completed",
+    "did not attend",
+    "did not complete",
+    "dna",
+    "absent",
+    "no show",
+    "no-show",
+    "n/a",
+    "na",
+    "none",
+    "-",
+}
+
+
+def _parse_completed(values: dict[str, str]) -> bool:
+    """Read the completion flag for one row.
+
+    A file with no completion column at all IS the list of completions (that
+    is how survey exports arrive), so a missing column means completed. A
+    column that exists but is blank on this row does not: a human left it
+    empty, which is never a statement that someone completed anything.
+    """
+    if not _has_column(values, "completed"):
         return True
-    return value.strip().lower() not in {"false", "no", "n", "0", "incomplete", "not completed"}
+    value = _lookup(values, "completed")
+    if value is None:
+        return False
+    return value.strip().lower() not in NOT_COMPLETED_VALUES
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -144,6 +296,32 @@ def _decode_csv(contents: bytes) -> str:
         except UnicodeDecodeError:
             continue
     raise ValueError("The file is not text in a supported encoding (UTF-8 or Windows-1252)")
+
+
+def looks_like_csv_text(contents: bytes) -> bool:
+    """Whether the upload gate should let these bytes through as a CSV.
+
+    Kept next to _decode_csv on purpose: the gate must accept exactly what the
+    decoder can read. Judging a CSV by "does it decode as UTF-8" rejected the
+    cp1252 and UTF-16 exports Excel produces — files this importer reads fine.
+
+    The gate still has to keep real binaries out, and latin-1 "decodes"
+    anything, so the decoded text is checked for the control characters that
+    text never contains but compressed/binary payloads always do.
+    """
+    if not contents:
+        return False
+    try:
+        text = _decode_csv(contents)
+    except ValueError:
+        return False
+    # Tab, CR and LF are legitimate in CSV; every other C0/C1 control byte (and
+    # DEL) means this is not a spreadsheet export.
+    sample = text[:8192]
+    return not any(
+        (code < 32 and char not in "\t\r\n") or 127 <= code < 160
+        for char, code in ((char, ord(char)) for char in sample)
+    )
 
 
 def _dedupe_headers(fieldnames: list[str]) -> list[str]:
@@ -508,14 +686,130 @@ def parse_document_bytes(
     raise ValueError("Supported uploads are CSV, XLSX, PDF, DOCX, PNG, JPG, and JPEG")
 
 
-def process_rows(
-    db: Session,
-    event_id: int,
-    file_type: str,
-    rows: list[dict[str, str]],
-    extraction_errors: list[dict[str, Any]] | None = None,
-) -> tuple[int, list[dict[str, Any]]]:
-    errors: list[dict[str, Any]] = list(extraction_errors or [])
+class _PreparedRow:
+    """One spreadsheet row, parsed and validated before anything is written."""
+
+    __slots__ = ("number", "row", "values", "identity", "norm_email", "score")
+
+    def __init__(
+        self,
+        number: int,
+        row: dict[str, str],
+        values: dict[str, str],
+        identity: dict[str, str | None],
+    ) -> None:
+        self.number = number
+        self.row = row
+        self.values = values
+        self.identity = identity
+        self.norm_email = normalize_email(identity["email"])
+        self.score: Decimal | None = None
+
+
+def _prepare_rows(
+    rows: list[dict[str, str]], errors: list[dict[str, Any]]
+) -> list[_PreparedRow]:
+    """Read every row's identity before the import touches the database."""
+    prepared: list[_PreparedRow] = []
+    for row_number, row in enumerate(rows, start=2):
+        values = _normalize_row(row)
+        # Skip whitespace-only rows (common padding in hand-edited spreadsheets)
+        # without disturbing the row numbers reported for later errors.
+        if not any(values.values()):
+            continue
+        try:
+            identity = _identity(values)
+        except ValueError as exc:
+            errors.append({"row": row_number, "message": str(exc)})
+            continue
+        prepared.append(_PreparedRow(row_number, row, values, identity))
+    return prepared
+
+
+def _reject_indistinguishable_rows(
+    prepared: list[_PreparedRow], errors: list[dict[str, Any]]
+) -> list[_PreparedRow]:
+    """Refuse rows that name the same person twice with no way to tell them apart.
+
+    Two "John Smith" rows with no email on one sign-in sheet used to resolve to
+    a single attendee: the roster showed one person, no error was raised, and
+    one of the two real people simply never got a certificate. There is no way
+    to know whether such rows are two people or one, so neither is imported and
+    the uploader is asked for the emails that would settle it.
+    """
+    groups: dict[str, list[_PreparedRow]] = {}
+    for item in prepared:
+        # An email is an identity: rows carrying one are never ambiguous.
+        if item.norm_email:
+            continue
+        groups.setdefault(core_name(item.identity["full_name"]), []).append(item)
+
+    rejected: set[int] = set()
+    for group in groups.values():
+        # A shared core name only *suggests* the same person; confirm with the
+        # variant rules so "Bob A. Smith" and "Bob C. Smith" stay two people.
+        clusters: list[list[_PreparedRow]] = []
+        for item in group:
+            for cluster in clusters:
+                if names_are_variants(
+                    cluster[0].identity["full_name"], item.identity["full_name"]
+                ):
+                    cluster.append(item)
+                    break
+            else:
+                clusters.append([item])
+        for cluster in clusters:
+            if len(cluster) < 2:
+                continue
+            names = sorted({item.identity["full_name"] or "" for item in cluster})
+            if len(names) == 1:
+                message = (
+                    f'{len(cluster)} rows named "{names[0]}" have no email address — '
+                    "add emails to tell them apart. None of these rows were imported."
+                )
+            else:
+                spelled = " and ".join(f'"{name}"' for name in names)
+                message = (
+                    f"Rows named {spelled} have no email address and may be the same "
+                    "person — add emails to tell them apart. None of these rows were "
+                    "imported."
+                )
+            for item in cluster:
+                rejected.add(item.number)
+                errors.append({"row": item.number, "message": message})
+    return [item for item in prepared if item.number not in rejected]
+
+
+def _prepare_scores(
+    prepared: list[_PreparedRow],
+    score_basis: str | None,
+    errors: list[dict[str, Any]],
+) -> tuple[list[_PreparedRow], str | None]:
+    """Resolve the column's score basis, then read every score with it.
+
+    Scores are parsed here, before the destructive reset, so a file whose
+    scores are all unreadable cannot clear the scores already on the event.
+    """
+    basis = resolve_score_basis(
+        score_basis, [_lookup(item.values, "score") or "" for item in prepared]
+    )
+    kept: list[_PreparedRow] = []
+    for item in prepared:
+        try:
+            item.score = _parse_score(_lookup(item.values, "score"), basis)
+        except ValueError as exc:
+            errors.append({"row": item.number, "message": str(exc)})
+            continue
+        kept.append(item)
+    return kept, basis
+
+
+def _reset_previous_results(db: Session, event_id: int, file_type: str) -> None:
+    """Clear the results a re-import replaces.
+
+    Destructive by design and therefore only ever called once the import is
+    known to have rows to put back (see process_rows).
+    """
     # Attendance recorded through the public QR check-in (checked_in_at set)
     # must survive file re-imports: only rows sourced from files are reset.
     if file_type == "registration":
@@ -567,67 +861,141 @@ def process_rows(
             delete(SurveyResult).where(SurveyResult.event_id == event_id, SurveyResult.source == "upload")
         )
 
-    names_found = 0
-    for row_number, row in enumerate(rows, start=2):
-        # Skip whitespace-only rows (common padding in hand-edited spreadsheets)
-        # without disturbing the row numbers reported for later errors.
-        if not any(str(value).strip() for value in row.values() if value is not None):
-            continue
+
+def process_rows(
+    db: Session,
+    event_id: int,
+    file_type: str,
+    rows: list[dict[str, str]],
+    extraction_errors: list[dict[str, Any]] | None = None,
+    score_basis: str | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Import parsed rows into an event, replacing what the last import wrote.
+
+    Runs in two phases on purpose. Everything that can reject a row — names,
+    duplicate-name ambiguity, the score column's unit — is resolved first,
+    against no database state; only then does the destructive reset run, inside
+    a SAVEPOINT, so a file that turns out to import nothing leaves the event
+    exactly as it was and the caller can fail the request instead of reporting
+    a success that quietly erased an evening's results.
+    """
+    if file_type not in {"registration", "attendance", "post_test", "survey"}:
+        raise ValueError(f"Unsupported file type: {file_type}")
+    errors: list[dict[str, Any]] = list(extraction_errors or [])
+
+    prepared = _prepare_rows(rows, errors)
+    named_rows = len(prepared)
+    prepared = _reject_indistinguishable_rows(prepared, errors)
+    basis: str | None = None
+    if file_type == "post_test" and prepared:
         try:
-            identity = _identity(row)
-            names_found += 1
-            attendee = match_or_create_attendee(
-                db,
-                event_id,
-                identity["full_name"] or "",
-                identity["email"],
-                first_name=identity["first_name"],
-                last_name=identity["last_name"],
-                company=identity["company"],
-                license_number=identity["license_number"],
-            )
-            link = get_or_create_link(db, event_id, attendee.id)
-            if file_type == "registration":
-                link.registered = True
-            elif file_type == "attendance":
-                link.attended = True
-            elif file_type == "post_test":
-                score = _parse_score(_value(row, "score"))
-                link.test_completed = True
-                link.test_score = score
-                db.add(
-                    TestResult(
-                        event_id=event_id,
-                        attendee_id=attendee.id,
-                        score=score,
-                        passed=score >= Decimal("80"),
-                        completed_at=_parse_datetime(_value(row, "completed_at")),
-                        raw_payload=row,
-                        source="upload",
-                    )
-                )
-            elif file_type == "survey":
-                completed = _parse_completed(_value(row, "completed"))
-                link.survey_completed = completed
-                db.add(
-                    SurveyResult(
-                        event_id=event_id,
-                        attendee_id=attendee.id,
-                        completed=completed,
-                        completed_at=_parse_datetime(_value(row, "completed_at")),
-                        raw_payload=row,
-                        source="upload",
-                    )
-                )
-            else:
-                raise ValueError(f"Unsupported file type: {file_type}")
+            prepared, basis = _prepare_scores(prepared, score_basis, errors)
         except ValueError as exc:
-            errors.append({"row": row_number, "message": str(exc)})
-    if names_found == 0:
-        # An upload that produced no attendees at all must say so explicitly
-        # instead of silently succeeding with an empty roster.
-        errors.append({"row": 0, "message": NO_NAMES_MESSAGE})
-    recalculate_event(db, event_id)
+            # A score column that cannot be read with certainty stops the
+            # import here, before the reset, so the event keeps the scores it
+            # already had rather than losing them to a file we refused.
+            errors.append({"row": 0, "message": str(exc)})
+            raise EmptyImportError(str(exc), len(rows), errors) from exc
+
+    if not prepared:
+        # Nothing to import: say so and leave the event untouched. The
+        # zero-names wording stays for the case it was written for (a file the
+        # parser could read no names from at all).
+        message = NOTHING_IMPORTED_MESSAGE if named_rows else NO_NAMES_MESSAGE
+        errors.append({"row": 0, "message": message})
+        raise EmptyImportError(message, len(rows), errors)
+
+    if file_type == "post_test":
+        # Always report how the scores were read: a misread column is the
+        # difference between a pass and a fail, and only the admin can catch it.
+        errors.append(
+            {
+                "row": 0,
+                "level": "info",
+                "message": describe_score_basis(basis, bool(score_basis)),
+            }
+        )
+
+    # One batched read of everything this file can match, instead of two
+    # queries per row against a pooled remote database.
+    roster = EventRoster(db, event_id, {item.norm_email for item in prepared if item.norm_email})
+
+    savepoint = db.begin_nested()
+    try:
+        _reset_previous_results(db, event_id, file_type)
+        imported = 0
+        for item in prepared:
+            identity = item.identity
+            row_notes: list[str] = []
+            try:
+                attendee = match_or_create_attendee(
+                    db,
+                    event_id,
+                    identity["full_name"] or "",
+                    identity["email"],
+                    first_name=identity["first_name"],
+                    last_name=identity["last_name"],
+                    company=identity["company"],
+                    license_number=identity["license_number"],
+                    roster=roster,
+                    notes=row_notes,
+                )
+                link = get_or_create_link(db, event_id, attendee.id, roster=roster)
+                if file_type == "registration":
+                    link.registered = True
+                elif file_type == "attendance":
+                    link.attended = True
+                elif file_type == "post_test":
+                    score = item.score
+                    link.test_completed = True
+                    link.test_score = score
+                    db.add(
+                        TestResult(
+                            event_id=event_id,
+                            attendee_id=attendee.id,
+                            score=score,
+                            passed=score >= Decimal("80"),
+                            completed_at=_parse_datetime(_lookup(item.values, "completed_at")),
+                            raw_payload=item.row,
+                            source="upload",
+                        )
+                    )
+                elif file_type == "survey":
+                    completed = _parse_completed(item.values)
+                    link.survey_completed = completed
+                    db.add(
+                        SurveyResult(
+                            event_id=event_id,
+                            attendee_id=attendee.id,
+                            completed=completed,
+                            completed_at=_parse_datetime(_lookup(item.values, "completed_at")),
+                            raw_payload=item.row,
+                            source="upload",
+                        )
+                    )
+                imported += 1
+            except ValueError as exc:
+                errors.append({"row": item.number, "message": str(exc)})
+                continue
+            finally:
+                for note in row_notes:
+                    errors.append({"row": item.number, "level": "info", "message": note})
+        if imported:
+            # Links created during the import are still pending (see
+            # get_or_create_link); the session does not autoflush, so they must
+            # be written before the recalculation queries them back.
+            db.flush()
+            recalculate_event(db, event_id)
+    except Exception:
+        savepoint.rollback()
+        raise
+    if not imported:
+        # Belt and braces for the invariant the two phases already enforce: a
+        # reset that put nothing back is rolled all the way out.
+        savepoint.rollback()
+        errors.append({"row": 0, "message": NOTHING_IMPORTED_MESSAGE})
+        raise EmptyImportError(NOTHING_IMPORTED_MESSAGE, len(rows), errors)
+    savepoint.commit()
     return len(rows), errors
 
 
@@ -638,9 +1006,10 @@ def process_document(
     filename: str,
     contents: bytes,
     sheet_format: str | None = None,
+    score_basis: str | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
     rows, extraction_errors = parse_document_bytes(filename, contents, sheet_format=sheet_format)
-    return process_rows(db, event_id, file_type, rows, extraction_errors)
+    return process_rows(db, event_id, file_type, rows, extraction_errors, score_basis=score_basis)
 
 
 def process_csv(
@@ -648,8 +1017,11 @@ def process_csv(
     event_id: int,
     file_type: str,
     contents: bytes,
+    score_basis: str | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
-    return process_rows(db, event_id, file_type, parse_csv_bytes(contents))
+    return process_rows(
+        db, event_id, file_type, parse_csv_bytes(contents), score_basis=score_basis
+    )
 
 
 def save_upload(contents: bytes, destination: Path) -> None:

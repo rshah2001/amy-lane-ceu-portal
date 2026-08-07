@@ -3,7 +3,6 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/api_client.dart';
-import '../core/theme.dart';
 import '../widgets/common.dart';
 import 'public_survey_page.dart';
 import 'public_test_page.dart';
@@ -29,9 +28,23 @@ class _CheckinPageState extends State<CheckinPage> {
   final formKey = GlobalKey<FormState>();
   final name = TextEditingController();
   final email = TextEditingController();
+  final nameField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'full name'),
+  );
+  final emailField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'email address'),
+  );
   Map<String, dynamic>? event;
   Map<String, dynamic> nextSteps = {};
-  String? error;
+  // Two separate failures, because they need opposite treatment: a failed
+  // *load* means there is no form to show (fatal, full-page panel), while a
+  // failed *submit* must leave the filled-in form on screen so the attendee
+  // can simply press the button again. Collapsing them into one field hid the
+  // form behind a permanent error panel after any submit hiccup.
+  String? loadError;
+  String? submitError;
   bool submitted = false;
   bool saving = false;
 
@@ -47,23 +60,36 @@ class _CheckinPageState extends State<CheckinPage> {
   void dispose() {
     name.dispose();
     email.dispose();
+    nameField.focus.dispose();
+    emailField.focus.dispose();
     super.dispose();
   }
 
   Future<void> load() async {
     try {
       final result = await widget.api.get('/public/checkin/${widget.token}') as Map<String, dynamic>;
-      if (mounted) setState(() => event = result);
+      // Clear the error on success, or "Retry" would fetch the event fine and
+      // still leave the failure panel on screen forever.
+      if (mounted) {
+        setState(() {
+          event = result;
+          loadError = null;
+        });
+      }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => loadError = message);
+        announceToScreenReader(context, message);
+      }
     }
   }
 
   Future<void> submit() async {
-    if (!formKey.currentState!.validate()) return;
+    if (!validateAndFocusFirstError(context, formKey, [nameField, emailField])) return;
     setState(() {
       saving = true;
-      error = null;
+      submitError = null;
     });
     try {
       final result = await widget.api.post('/public/checkin/${widget.token}', {
@@ -77,7 +103,11 @@ class _CheckinPageState extends State<CheckinPage> {
         });
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => submitError = message);
+        announceToScreenReader(context, message);
+      }
     } finally {
       if (mounted) setState(() => saving = false);
     }
@@ -88,7 +118,7 @@ class _CheckinPageState extends State<CheckinPage> {
   List<Widget> _nextStepButtons() {
     final buttons = <Widget>[];
     void addButton(String label, IconData icon, VoidCallback onPressed) {
-      buttons.add(const SizedBox(height: 14));
+      buttons.add(const SizedBox(height: Space.sm + 2));
       buttons.add(ElevatedButton.icon(onPressed: onPressed, icon: Icon(icon), label: Text(label)));
     }
 
@@ -97,6 +127,10 @@ class _CheckinPageState extends State<CheckinPage> {
     if (nextSteps['test_token'] != null) {
       addButton('Continue to the post-test', Icons.quiz, () {
         Navigator.of(context).push(MaterialPageRoute(
+          // No inviteNonce, deliberately: this is the walk-in path. Check-in
+          // is itself a shared QR link and the person may not be on the roster
+          // at all, so there is no per-attendee secret to carry — attribution
+          // falls back to the name and address just typed above.
           builder: (_) => PublicTestPage(
             api: widget.api,
             token: nextSteps['test_token'] as String,
@@ -131,6 +165,8 @@ class _CheckinPageState extends State<CheckinPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     return Scaffold(
       appBar: AppBar(
         backgroundColor: navy,
@@ -141,21 +177,31 @@ class _CheckinPageState extends State<CheckinPage> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560),
-            child: error != null
-                ? ErrorPanel(message: error!, onRetry: load)
+            constraints: const BoxConstraints(maxWidth: maxPublicWidth),
+            child: loadError != null
+                ? ErrorPanel(message: loadError!, onRetry: load)
                 : event == null
-                    ? const LoadingPanel()
+                    ? const LoadingPanel(label: 'Loading the check-in page')
                     : submitted
                         ? Card(
                             child: Padding(
-                              padding: const EdgeInsets.all(40),
-                              child: Column(
+                              padding: const EdgeInsets.all(Space.xxxl - 8),
+                              child: Semantics(
+                                liveRegion: true,
+                                container: true,
+                                child: Column(
                                 children: [
-                                  const Icon(Icons.verified, color: Color(0xFF248A52), size: 52),
-                                  const SizedBox(height: 16),
-                                  const Text("You're checked in", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
-                                  const SizedBox(height: 8),
+                                  ExcludeSemantics(
+                                    child: Icon(Icons.verified, color: colors.success, size: 52),
+                                  ),
+                                  const SizedBox(height: Space.md),
+                                  Heading(
+                                    child: Text(
+                                      "You're checked in",
+                                      style: theme.textTheme.headlineMedium,
+                                    ),
+                                  ),
+                                  const SizedBox(height: Space.xs),
                                   Text(
                                     nextSteps.isEmpty
                                         ? 'Your attendance has been recorded. Remember to complete the post-test to earn your certificate.'
@@ -164,28 +210,41 @@ class _CheckinPageState extends State<CheckinPage> {
                                   ),
                                   ..._nextStepButtons(),
                                 ],
+                                ),
                               ),
                             ),
                           )
                         : Card(
                             child: Padding(
-                              padding: const EdgeInsets.all(26),
+                              padding: const EdgeInsets.all(Space.xl),
                               child: Form(
                                 key: formKey,
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.stretch,
                                   children: [
-                                    Text(event!['event_title'] as String, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
-                                    const SizedBox(height: 5),
+                                    Heading(
+                                      child: Text(
+                                        event!['event_title'] as String,
+                                        style: theme.textTheme.headlineMedium,
+                                      ),
+                                    ),
+                                    const SizedBox(height: Space.xxs + 1),
                                     Text(
                                       '${DateFormat.yMMMMd().format(DateTime.parse(event!['event_date'] as String))}'
                                       '${event!['location'] != null ? ' • ${event!['location']}' : ''}',
-                                      style: const TextStyle(color: Color(0xFF667085)),
+                                      style: theme.textTheme.bodyMedium
+                                          ?.copyWith(color: colors.textSecondary),
                                     ),
-                                    const SizedBox(height: 20),
-                                    const Text('Confirm your attendance for this event.', style: TextStyle(color: Color(0xFF667085))),
-                                    const SizedBox(height: 16),
+                                    const SizedBox(height: Space.lg),
+                                    Text(
+                                      'Confirm your attendance for this event.',
+                                      style: theme.textTheme.bodyMedium
+                                          ?.copyWith(color: colors.textSecondary),
+                                    ),
+                                    const SizedBox(height: Space.md),
                                     TextFormField(
+                                      key: nameField.key,
+                                      focusNode: nameField.focus,
                                       controller: name,
                                       autofillHints: const [AutofillHints.name],
                                       textCapitalization: TextCapitalization.words,
@@ -193,21 +252,23 @@ class _CheckinPageState extends State<CheckinPage> {
                                       decoration: const InputDecoration(labelText: 'Full name'),
                                       validator: (v) => v == null || v.trim().length < 2 ? 'Enter your name' : null,
                                     ),
-                                    const SizedBox(height: 14),
+                                    const SizedBox(height: Space.sm + 2),
                                     TextFormField(
+                                      key: emailField.key,
+                                      focusNode: emailField.focus,
                                       controller: email,
                                       keyboardType: TextInputType.emailAddress,
                                       autofillHints: const [AutofillHints.email],
                                       textInputAction: TextInputAction.done,
                                       onFieldSubmitted: (_) => submit(),
                                       decoration: const InputDecoration(labelText: 'Email address'),
-                                      validator: (v) => v == null || !v.contains('@') ? 'Enter a valid email' : null,
+                                      validator: emailValidator,
                                     ),
-                                    if (error != null) ...[
-                                      const SizedBox(height: 12),
-                                      Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                                    if (submitError != null) ...[
+                                      const SizedBox(height: Space.sm),
+                                      FormErrorText(submitError!),
                                     ],
-                                    const SizedBox(height: 22),
+                                    const SizedBox(height: Space.xl - 2),
                                     ElevatedButton.icon(
                                       onPressed: saving ? null : submit,
                                       icon: const Icon(Icons.how_to_reg),

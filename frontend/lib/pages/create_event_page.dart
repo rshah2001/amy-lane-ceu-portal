@@ -30,6 +30,14 @@ class _CreateEventPageState extends State<CreateEventPage> {
   final postTestUrl = TextEditingController();
   final externalSurveyUrl = TextEditingController();
   final certificateTitle = TextEditingController(text: 'Certificate of Completion');
+  // Keys + focus nodes for the named fields, in visual order, so a failed
+  // validation on this ~15-field page lands the caret on the actual problem
+  // rather than leaving it on the save button 800px below it.
+  final titleField = (key: GlobalKey<FormFieldState<String>>(), focus: FocusNode(debugLabel: 'event title'));
+  final hoursField = (key: GlobalKey<FormFieldState<String>>(), focus: FocusNode(debugLabel: 'CEU hours'));
+  final postTestUrlField = (key: GlobalKey<FormFieldState<String>>(), focus: FocusNode(debugLabel: 'external post-test link'));
+  final externalSurveyUrlField = (key: GlobalKey<FormFieldState<String>>(), focus: FocusNode(debugLabel: 'external survey URL'));
+  final certificateTitleField = (key: GlobalKey<FormFieldState<String>>(), focus: FocusNode(debugLabel: 'certificate heading'));
   String eventType = 'lunch_and_learn';
   String surveyMode = 'internal';
   bool surveyRequired = false;
@@ -102,6 +110,11 @@ class _CreateEventPageState extends State<CreateEventPage> {
     postTestUrl.dispose();
     externalSurveyUrl.dispose();
     certificateTitle.dispose();
+    titleField.focus.dispose();
+    hoursField.focus.dispose();
+    postTestUrlField.focus.dispose();
+    externalSurveyUrlField.focus.dispose();
+    certificateTitleField.focus.dispose();
     for (final question in testQuestions) {
       question.dispose();
     }
@@ -134,10 +147,37 @@ class _CreateEventPageState extends State<CreateEventPage> {
   }
 
   Future<void> save() async {
-    if (!formKey.currentState!.validate()) return;
+    final ordered = [
+      titleField,
+      hoursField,
+      if (testMode == 'external') postTestUrlField,
+      if (surveyMode == 'external') externalSurveyUrlField,
+      certificateTitleField,
+    ];
+    if (!validateAndFocusFirstError(context, formKey, ordered)) return;
     if (testMode == 'internal' && testQuestions.isEmpty) {
-      setState(() => error = 'Add at least one test question or switch to an external post-test.');
+      const message = 'Add at least one test question or switch to an external post-test.';
+      setState(() => error = message);
+      announceToScreenReader(context, message);
       return;
+    }
+    if (testMode == 'internal') {
+      // A wrong answer key is worse than an incomplete form: the event saves,
+      // the test runs, and attendees who answered correctly are failed.
+      final unanswered = [
+        for (var i = 0; i < testQuestions.length; i++)
+          if (!testQuestions[i].hasAnswer) i + 1,
+      ];
+      if (unanswered.isNotEmpty) {
+        final message = unanswered.length == 1
+            ? 'Question ${unanswered.first} has no correct answer marked. '
+                'Select the correct choice before saving.'
+            : 'Questions ${unanswered.join(', ')} have no correct answer marked. '
+                'Select the correct choice for each before saving.';
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+        return;
+      }
     }
     setState(() {
       saving = true;
@@ -175,19 +215,89 @@ class _CreateEventPageState extends State<CreateEventPage> {
           : await widget.session.api.post('/events', body);
       widget.onSaved(TrainingEvent.fromJson(json as Map<String, dynamic>));
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     } finally {
       if (mounted) setState(() => saving = false);
     }
   }
 
+  /// Nudge shown under the portal-access dropdown.
+  ///
+  /// The failure this exists to stop is quiet: the event saves fine, and only
+  /// weeks later does the presenter discover they can't sign in to upload
+  /// anything. So when the typed certificate name matches a real portal
+  /// account that hasn't been given access, offer it in one click; and when
+  /// nobody is assigned at all, say plainly who is left holding the upload.
+  List<Widget> _presenterAccessHint() {
+    if (assignedPresenterId != null) return const [];
+    final colors = Theme.of(context).portal;
+    final typed = presenter.text.trim().toLowerCase();
+    Map<String, dynamic>? match;
+    if (typed.isNotEmpty) {
+      for (final candidate in presenters) {
+        if ((candidate['full_name'] as String?)?.trim().toLowerCase() == typed) {
+          match = candidate;
+          break;
+        }
+      }
+    }
+    return [
+      const SizedBox(height: Space.xs),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(Space.sm),
+        decoration: BoxDecoration(
+          color: colors.warningSurface,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: colors.warning),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.info_outline, size: 18, color: colors.warning),
+            const SizedBox(width: Space.xs),
+            Expanded(
+              child: match == null
+                  ? Text(
+                      'Nobody can sign in to upload the sign-in sheet for this event. '
+                      'An administrator will have to upload it instead.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${match['full_name']} has a portal account but no access to this event.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: Space.xxs),
+                        TextButton(
+                          onPressed: () => setState(() => assignedPresenterId = match!['id'] as int),
+                          child: Text('Give ${match['full_name']} access'),
+                        ),
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return SingleChildScrollView(
       padding: pagePadding,
       child: Center(
+        // The page column matches every other page in the shell so it stops
+        // resizing on navigation; the form itself keeps a readable measure.
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 920),
+          constraints: const BoxConstraints(maxWidth: maxFormWidth),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -209,11 +319,12 @@ class _CreateEventPageState extends State<CreateEventPage> {
                         _SuggestTextField(
                           controller: title,
                           focusNode: titleFocus,
+                          fieldKey: titleField.key,
                           label: 'Event title',
                           suggestion: 'CAMS Lunch & Learn',
                           validator: (value) => value == null || value.trim().length < 2 ? 'Enter an event title' : null,
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: Space.md),
                         TextFormField(
                           controller: description,
                           maxLines: 3,
@@ -223,23 +334,31 @@ class _CreateEventPageState extends State<CreateEventPage> {
                         LayoutBuilder(
                           builder: (context, constraints) {
                             final fields = [
-                              InkWell(
-                                onTap: () async {
-                                  final earliest = DateTime.now().subtract(const Duration(days: 365));
-                                  final selected = await showDatePicker(
-                                    context: context,
-                                    firstDate: date.isBefore(earliest) ? date : earliest,
-                                    lastDate: DateTime.now().add(const Duration(days: 3650)),
-                                    initialDate: date,
-                                  );
-                                  if (selected != null) setState(() => date = selected);
-                                },
-                                child: InputDecorator(
-                                  decoration: const InputDecoration(labelText: 'Event date', prefixIcon: Icon(Icons.calendar_today_outlined)),
-                                  child: Text(DateFormat.yMMMd().format(date)),
+                              Semantics(
+                                button: true,
+                                label: 'Event date, ${DateFormat.yMMMd().format(date)}. '
+                                    'Opens a date picker.',
+                                excludeSemantics: true,
+                                child: InkWell(
+                                  onTap: () async {
+                                    final earliest = DateTime.now().subtract(const Duration(days: 365));
+                                    final selected = await showDatePicker(
+                                      context: context,
+                                      firstDate: date.isBefore(earliest) ? date : earliest,
+                                      lastDate: DateTime.now().add(const Duration(days: 3650)),
+                                      initialDate: date,
+                                    );
+                                    if (selected != null) setState(() => date = selected);
+                                  },
+                                  child: InputDecorator(
+                                    decoration: const InputDecoration(labelText: 'Event date', prefixIcon: Icon(Icons.calendar_today_outlined)),
+                                    child: Text(DateFormat.yMMMd().format(date)),
+                                  ),
                                 ),
                               ),
                               TextFormField(
+                                key: hoursField.key,
+                                focusNode: hoursField.focus,
                                 controller: hours,
                                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                                 decoration: const InputDecoration(labelText: 'CEU hours'),
@@ -265,22 +384,32 @@ class _CreateEventPageState extends State<CreateEventPage> {
                           suggestion: 'Live Virtual',
                         ),
                         const SizedBox(height: 16),
+                        // These two fields both used to say "presenter" and sat
+                        // next to each other, which read as one question asked
+                        // twice. Admins filled the certificate name and left the
+                        // access dropdown on "Unassigned" — 23 of 24 live events
+                        // ended up with no presenter able to sign in. They are
+                        // now explicitly framed as two different questions.
+                        const Align(alignment: Alignment.centerLeft, child: SectionTitle('Who is teaching this event')),
+                        const SizedBox(height: Space.xs),
                         TextFormField(
                           controller: presenter,
                           decoration: const InputDecoration(
-                            labelText: 'Presenter name(s)',
-                            helperText: "For two presenters, separate with ' & ' — both appear on the certificate",
+                            labelText: 'Presenter name — printed on the certificate',
+                            helperText: "Exactly as it should appear on the certificate. For two presenters, separate with ' & '",
                           ),
+                          // Rebuild so the suggestion below can react as they type.
+                          onChanged: (_) => setState(() {}),
                         ),
                         const SizedBox(height: 16),
                         DropdownButtonFormField<int?>(
                           initialValue: assignedPresenterId,
                           decoration: const InputDecoration(
-                            labelText: 'Assign presenter (portal access)',
-                            helperText: 'This presenter can sign in and upload the attendance sheet for this event',
+                            labelText: 'Portal access — who can upload the sign-in sheet',
+                            helperText: 'A different question from the name above: this is the account that can sign in for this event',
                           ),
                           items: [
-                            const DropdownMenuItem<int?>(value: null, child: Text('Unassigned')),
+                            const DropdownMenuItem<int?>(value: null, child: Text('Nobody (admins upload it)')),
                             for (final p in presenters)
                               DropdownMenuItem<int?>(
                                 value: p['id'] as int,
@@ -289,6 +418,7 @@ class _CreateEventPageState extends State<CreateEventPage> {
                           ],
                           onChanged: (value) => setState(() => assignedPresenterId = value),
                         ),
+                        ..._presenterAccessHint(),
                         const SizedBox(height: 16),
                         DropdownButtonFormField<String>(
                           initialValue: eventType,
@@ -302,8 +432,8 @@ class _CreateEventPageState extends State<CreateEventPage> {
                           onChanged: (value) => setState(() => eventType = value!),
                         ),
                         const SizedBox(height: 22),
-                        const Align(alignment: Alignment.centerLeft, child: Text('Post-test', style: TextStyle(fontWeight: FontWeight.w700))),
-                        const SizedBox(height: 8),
+                        const Align(alignment: Alignment.centerLeft, child: SectionTitle('Post-test')),
+                        const SizedBox(height: Space.xs),
                         SegmentedButton<String>(
                           segments: const [
                             ButtonSegment(value: 'internal', label: Text('Built-in test'), icon: Icon(Icons.quiz_outlined)),
@@ -315,6 +445,8 @@ class _CreateEventPageState extends State<CreateEventPage> {
                         if (testMode == 'external') ...[
                           const SizedBox(height: 16),
                           TextFormField(
+                            key: postTestUrlField.key,
+                            focusNode: postTestUrlField.focus,
                             controller: postTestUrl,
                             keyboardType: TextInputType.url,
                             decoration: const InputDecoration(
@@ -345,8 +477,8 @@ class _CreateEventPageState extends State<CreateEventPage> {
                           ),
                         ],
                         const SizedBox(height: 22),
-                        const Align(alignment: Alignment.centerLeft, child: Text('Feedback survey', style: TextStyle(fontWeight: FontWeight.w700))),
-                        const SizedBox(height: 8),
+                        const Align(alignment: Alignment.centerLeft, child: SectionTitle('Feedback survey')),
+                        const SizedBox(height: Space.xs),
                         SegmentedButton<String>(
                           segments: const [
                             ButtonSegment(value: 'internal', label: Text('Built-in survey'), icon: Icon(Icons.qr_code)),
@@ -358,6 +490,8 @@ class _CreateEventPageState extends State<CreateEventPage> {
                         if (surveyMode == 'external') ...[
                           const SizedBox(height: 16),
                           TextFormField(
+                            key: externalSurveyUrlField.key,
+                            focusNode: externalSurveyUrlField.focus,
                             controller: externalSurveyUrl,
                             keyboardType: TextInputType.url,
                             decoration: const InputDecoration(labelText: 'External survey URL'),
@@ -369,12 +503,15 @@ class _CreateEventPageState extends State<CreateEventPage> {
                           ),
                         ] else if (isEdit) ...[
                           const SizedBox(height: 12),
-                          const Align(
+                          Align(
                             alignment: Alignment.centerLeft,
                             child: Text(
                               'Survey questions attendees are asked. Edits replace the current list. '
                               'Switch a question to "Multiple choice" for an agree/disagree scale — the standard scale is pre-filled.',
-                              style: TextStyle(fontSize: 12, color: Color(0xFF667085)),
+                              style: theme.textTheme.labelMedium?.copyWith(
+                                color: theme.portal.textSecondary,
+                                fontWeight: FontWeight.w400,
+                              ),
                             ),
                           ),
                           const SizedBox(height: 10),
@@ -403,15 +540,17 @@ class _CreateEventPageState extends State<CreateEventPage> {
                         ),
                         const SizedBox(height: 16),
                         TextFormField(
+                          key: certificateTitleField.key,
+                          focusNode: certificateTitleField.focus,
                           controller: certificateTitle,
                           decoration: const InputDecoration(labelText: 'Certificate heading'),
                           validator: (value) => value == null || value.trim().isEmpty ? 'Enter certificate wording' : null,
                         ),
                         if (error != null) ...[
-                          const SizedBox(height: 14),
-                          Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                          const SizedBox(height: Space.sm + 2),
+                          FormErrorText(error!),
                         ],
-                        const SizedBox(height: 24),
+                        const SizedBox(height: Space.xl),
                         Align(
                           alignment: Alignment.centerRight,
                           child: ElevatedButton.icon(
@@ -443,6 +582,7 @@ class _SuggestTextField extends StatelessWidget {
     required this.focusNode,
     required this.label,
     required this.suggestion,
+    this.fieldKey,
     this.validator,
   });
 
@@ -450,6 +590,10 @@ class _SuggestTextField extends StatelessWidget {
   final FocusNode focusNode;
   final String label;
   final String suggestion;
+
+  /// Forwarded to the inner [TextFormField] so failed validation can find and
+  /// focus this field.
+  final GlobalKey<FormFieldState<String>>? fieldKey;
   final String? Function(String?)? validator;
 
   @override
@@ -465,6 +609,7 @@ class _SuggestTextField extends StatelessWidget {
         return const Iterable<String>.empty();
       },
       fieldViewBuilder: (context, textController, fieldFocusNode, onFieldSubmitted) => TextFormField(
+        key: fieldKey,
         controller: textController,
         focusNode: fieldFocusNode,
         decoration: InputDecoration(labelText: label, suffixIcon: const Icon(Icons.arrow_drop_down)),
@@ -507,15 +652,13 @@ class _SurveyRequiredToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Switch(
-          value: value,
-          activeTrackColor: const Color(0xFF12805C),
-          onChanged: onChanged,
-        ),
-        const SizedBox(width: 10),
+        // The track colour now comes from switchTheme.
+        Switch(value: value, onChanged: onChanged),
+        const SizedBox(width: Space.xs + 2),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -526,15 +669,20 @@ class _SurveyRequiredToggle extends StatelessWidget {
                 value
                     ? 'Attendees must complete the feedback survey to be eligible.'
                     : 'Survey is optional (encouraged but does not block certificates).',
-                style: const TextStyle(fontSize: 12, color: Color(0xFF667085)),
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: theme.portal.textSecondary,
+                  fontWeight: FontWeight.w400,
+                ),
               ),
             ],
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: Space.xs + 2),
         StatusBadge(
           value ? 'Required' : 'Optional',
-          tone: value ? BadgeTone.success : BadgeTone.danger,
+          // "Optional" is a valid configuration, not a fault. Red read as
+          // "something is wrong here" on a setting that is off by default.
+          tone: value ? BadgeTone.success : BadgeTone.neutral,
         ),
       ],
     );
@@ -557,7 +705,9 @@ class _QuestionDraft {
     while (choices.length < 4) {
       choices.add(TextEditingController());
     }
-    if (correctIndex >= choices.length) correctIndex = 0;
+    // An existing question always has an answer; only guard the stored index
+    // against a choice list that has since shrunk.
+    if (correctIndex != null && correctIndex! >= choices.length) correctIndex = 0;
   }
 
   /// Original question id when editing, so existing test submissions keep
@@ -565,13 +715,24 @@ class _QuestionDraft {
   final String? id;
   final TextEditingController prompt;
   final List<TextEditingController> choices;
-  int correctIndex = 0;
+
+  /// Null until someone actually picks the answer.
+  ///
+  /// This used to default to 0, which is indistinguishable from deliberately
+  /// choosing the first option — so an author who filled in a question and
+  /// forgot the radio silently shipped "A" as the answer key. Every attendee
+  /// who answered correctly was then marked wrong, on a test that decides CEU
+  /// credit. Unanswered is now its own state and is refused at save.
+  int? correctIndex;
+
+  bool get hasAnswer => correctIndex != null;
 
   Map<String, dynamic> toJson(String fallbackId) => {
         'id': id ?? fallbackId,
         'prompt': prompt.text.trim(),
         'choices': [for (final choice in choices) choice.text.trim()],
-        'correct_index': correctIndex,
+        // Guarded by the save-time check; the ?? 0 only keeps the type honest.
+        'correct_index': correctIndex ?? 0,
       };
 
   void dispose() {
@@ -598,19 +759,23 @@ class _QuestionEditor extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Card(
-      color: const Color(0xFFF7FAFC),
+      color: theme.portal.surfaceSubtle,
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(Space.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
               children: [
-                Text('Question $index', style: const TextStyle(fontWeight: FontWeight.w700)),
+                SectionTitle(
+                  'Question $index',
+                  style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+                ),
                 const Spacer(),
                 IconButton(
-                  tooltip: 'Remove question',
+                  tooltip: 'Remove question $index',
                   onPressed: onRemove,
                   icon: const Icon(Icons.delete_outline, size: 20),
                 ),
@@ -621,10 +786,19 @@ class _QuestionEditor extends StatelessWidget {
               decoration: const InputDecoration(labelText: 'Question text'),
               validator: (value) => value == null || value.trim().isEmpty ? 'Enter the question' : null,
             ),
-            const SizedBox(height: 6),
-            const Align(
+            const SizedBox(height: Space.xxs + 2),
+            Align(
               alignment: Alignment.centerLeft,
-              child: Text('Select the correct answer', style: TextStyle(fontSize: 12, color: Color(0xFF667085))),
+              // Flagged in place, while the author is looking at the question,
+              // rather than only at save. Nothing about an unmarked question
+              // looks wrong otherwise — the radios simply sit empty.
+              child: Text(
+                draft.hasAnswer ? 'Select the correct answer' : 'Select the correct answer — none marked yet',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: draft.hasAnswer ? theme.portal.textSecondary : theme.portal.warning,
+                  fontWeight: draft.hasAnswer ? FontWeight.w400 : FontWeight.w600,
+                ),
+              ),
             ),
             RadioGroup<int>(
               groupValue: draft.correctIndex,
@@ -637,7 +811,14 @@ class _QuestionEditor extends StatelessWidget {
                   for (var c = 0; c < draft.choices.length; c++)
                     Row(
                       children: [
-                        Radio<int>(value: c),
+                        // The radio sits beside a text field rather than a
+                        // label, so on its own it announced as "radio button,
+                        // 1 of 4" with no name — the "Select the correct
+                        // answer" hint above is a detached node.
+                        Semantics(
+                          label: 'Mark choice ${c + 1} as the correct answer',
+                          child: Radio<int>(value: c),
+                        ),
                         Expanded(
                           child: TextFormField(
                             controller: draft.choices[c],

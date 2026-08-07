@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 import '../core/file_download.dart';
 import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
+import '../widgets/portal_table.dart';
 
 class SurveyResponsesPage extends StatefulWidget {
   const SurveyResponsesPage({super.key, required this.session});
@@ -14,7 +14,7 @@ class SurveyResponsesPage extends StatefulWidget {
   State<SurveyResponsesPage> createState() => _SurveyResponsesPageState();
 }
 
-class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
+class _SurveyResponsesPageState extends State<SurveyResponsesPage> with LatestRequest {
   List<TrainingEvent> events = [];
   List<Map<String, dynamic>>? responses;
   int? eventFilter;
@@ -50,16 +50,27 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
   }
 
   Future<void> load() async {
+    // The event dropdown and the search box both reload; two changes in quick
+    // succession leave two reads in flight, and the older one landing last
+    // shows responses that don't match the filters on screen.
+    final request = beginRequest();
     setState(() {
       responses = null;
       error = null;
     });
     try {
       final result = await widget.session.api.get('/survey-responses${_query()}') as List;
-      if (mounted) setState(() => responses = result.cast<Map<String, dynamic>>());
+      if (request.isCurrent) setState(() => responses = result.cast<Map<String, dynamic>>());
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (request.isCurrent) _fail(exception);
     }
+  }
+
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
   }
 
   Future<void> export() async {
@@ -68,10 +79,130 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
       final bytes = await widget.session.api.download('/survey-responses.csv${_query()}');
       downloadBytes(bytes, 'survey_responses.csv', 'text/csv');
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => exporting = false);
     }
+  }
+
+  /// How many submissions this person has for this event.
+  ///
+  /// The backend keeps every submission, so the same person can appear more
+  /// than once; counting them lets a repeat be flagged as a repeat instead of
+  /// reading as an accidental duplicate row.
+  Map<String, int> get _submissionCounts {
+    final counts = <String, int>{};
+    for (final response in responses ?? const <Map<String, dynamic>>[]) {
+      final key = _personEventKey(response);
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    return counts;
+  }
+
+  List<TableColumn<Map<String, dynamic>>> _columns(BuildContext context) {
+    final theme = Theme.of(context);
+    final counts = _submissionCounts;
+    return [
+      TableColumn<Map<String, dynamic>>(
+        label: 'Respondent',
+        width: 220,
+        flex: 2,
+        sortValue: (response) => response['full_name'] as String?,
+        cell: (context, response) {
+          final repeats = counts[_personEventKey(response)] ?? 1;
+          return Row(
+            children: [
+              Flexible(
+                child: Text(
+                  response['full_name'] as String? ?? 'Anonymous',
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                ),
+              ),
+              if (repeats > 1) ...[
+                const SizedBox(width: Space.xs),
+                StatusBadge('$repeats SUBMISSIONS', tone: BadgeTone.warning),
+              ],
+            ],
+          );
+        },
+      ),
+      TableColumn<Map<String, dynamic>>(
+        label: 'Event',
+        width: 220,
+        flex: 2,
+        sortValue: (response) => response['event_title'] as String?,
+        cell: (context, response) => Text(
+          '${response['event_title']}',
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      TableColumn<Map<String, dynamic>>(
+        label: 'Email',
+        width: 220,
+        flex: 1,
+        sortValue: (response) => response['email'] as String?,
+        cell: (context, response) => Text(
+          response['email'] as String? ?? 'no email',
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: response['email'] == null ? theme.portal.textTertiary : null,
+          ),
+        ),
+      ),
+      TableColumn<Map<String, dynamic>>(
+        label: 'Business / location',
+        width: 200,
+        sortValue: (response) => (response['business_location'] as String?)?.trim(),
+        cell: (context, response) => Text(
+          (response['business_location'] as String?)?.trim().isEmpty ?? true
+              ? '—'
+              : (response['business_location'] as String).trim(),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      TableColumn<Map<String, dynamic>>(
+        label: 'Submitted',
+        width: 190,
+        // Sorted on the parsed instant rather than the formatted string.
+        sortValue: (response) =>
+            DateTime.tryParse(response['completed_at']?.toString() ?? ''),
+        cell: (context, response) {
+          final at = DateTime.tryParse(response['completed_at']?.toString() ?? '');
+          return Text(at == null ? '—' : formatDateTime(at));
+        },
+      ),
+    ];
+  }
+
+  /// The answer text, revealed under its row.
+  Widget _answers(BuildContext context, Map<String, dynamic> response) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
+    final answers = (response['answers'] as Map?)?.cast<String, dynamic>() ?? {};
+    if (answers.isEmpty) {
+      return Text(
+        'No answer text recorded.',
+        style: theme.textTheme.bodyMedium?.copyWith(color: colors.textSecondary),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final entry in answers.entries) ...[
+          Text(
+            entry.key,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: colors.textSecondary,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text('${entry.value}'),
+          const SizedBox(height: Space.xs + 2),
+        ],
+      ],
+    );
   }
 
   @override
@@ -95,7 +226,7 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final searchField = TextField(
@@ -116,46 +247,47 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
                     },
                   );
                   if (constraints.maxWidth < 760) {
-                    return Column(children: [eventDropdown, const SizedBox(height: 10), searchField]);
+                    return Column(children: [eventDropdown, const SizedBox(height: Space.xs + 2), searchField]);
                   }
-                  return Row(children: [Expanded(child: eventDropdown), const SizedBox(width: 12), Expanded(child: searchField)]);
+                  return Row(children: [Expanded(child: eventDropdown), const SizedBox(width: Space.sm), Expanded(child: searchField)]);
                 },
               ),
-              if (error != null) ...[
-                const SizedBox(height: 10),
-                Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+              // Only when there is a table to sit above: a failed load is
+              // reported inside the table instead, where it comes with a Retry.
+              if (error != null && responses != null) ...[
+                const SizedBox(height: Space.xs + 2),
+                FormErrorText(error!),
               ],
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               Expanded(
                 child: Card(
-                  child: responses == null
-                      ? const LoadingPanel()
-                      : responses!.isEmpty
-                          ? const EmptyState(
-                              icon: Icons.rate_review_outlined,
-                              message: 'No survey responses match this view',
-                              detail: 'Responses appear here as attendees complete the built-in feedback survey.',
-                            )
-                          : Builder(builder: (context) {
-                              // The backend keeps every submission, so the same
-                              // person can appear more than once; count them so
-                              // repeats are visibly flagged instead of looking
-                              // like accidental duplicates.
-                              final submissionCounts = <String, int>{};
-                              for (final response in responses!) {
-                                final key = _personEventKey(response);
-                                submissionCounts[key] = (submissionCounts[key] ?? 0) + 1;
-                              }
-                              return ListView.separated(
-                                padding: const EdgeInsets.all(8),
-                                itemCount: responses!.length,
-                                separatorBuilder: (_, __) => divider,
-                                itemBuilder: (context, index) => _ResponseTile(
-                                  response: responses![index],
-                                  submissionCount: submissionCounts[_personEventKey(responses![index])] ?? 1,
-                                ),
-                              );
-                            }),
+                  child: PortalTable<Map<String, dynamic>>(
+                    caption: 'Survey responses',
+                    columns: _columns(context),
+                    rows: responses,
+                    error: responses == null ? error : null,
+                    onRetry: load,
+                    loadingLabel: 'Loading survey responses',
+                    emptyIcon: Icons.rate_review_outlined,
+                    emptyMessage: 'No survey responses match this view',
+                    emptyDetail: 'Responses appear here as attendees complete the '
+                        'built-in feedback survey.',
+                    // Paged. Responses are read one at a time — a row is opened,
+                    // its answers are read, it is closed — which is a working
+                    // rhythm, not a scan.
+                    rowsPerPage: 25,
+                    initialSortColumn: 4,
+                    // Newest response first: the reason to open this page is
+                    // almost always "what came in since I last looked".
+                    initialSortAscending: false,
+                    rowKey: (response) => response['id'] as Object,
+                    rowSemanticLabel: (response) =>
+                        response['full_name'] as String? ?? 'Anonymous response',
+                    // The answers stay attached to their row rather than moving
+                    // to a dialog: reading feedback means comparing one person's
+                    // words against the next person's, and a modal breaks that.
+                    expansionBuilder: _answers,
+                  ),
                 ),
               ),
             ],
@@ -173,59 +305,4 @@ String _personEventKey(Map<String, dynamic> response) {
   // anonymous responses are never flagged as repeats from one person.
   if (identity.isEmpty) return 'anonymous|${response['id']}';
   return '$identity|${response['event_id'] ?? response['event_title']}';
-}
-
-class _ResponseTile extends StatelessWidget {
-  const _ResponseTile({required this.response, this.submissionCount = 1});
-  final Map<String, dynamic> response;
-
-  /// How many submissions this person has for this event (1 = no repeats).
-  final int submissionCount;
-
-  @override
-  Widget build(BuildContext context) {
-    final answers = (response['answers'] as Map?)?.cast<String, dynamic>() ?? {};
-    final completed = DateTime.tryParse(response['completed_at']?.toString() ?? '')?.toLocal();
-    final businessLocation = (response['business_location'] as String?)?.trim() ?? '';
-    return ExpansionTile(
-      shape: const Border(),
-      collapsedShape: const Border(),
-      title: Row(
-        children: [
-          Flexible(
-            child: Text(
-              response['full_name'] as String? ?? 'Anonymous',
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ),
-          if (submissionCount > 1) ...[
-            const SizedBox(width: 8),
-            StatusBadge('$submissionCount SUBMISSIONS', tone: BadgeTone.warning),
-          ],
-        ],
-      ),
-      subtitle: Text(
-        '${response['event_title']}  ·  ${response['email'] ?? 'no email'}'
-        '${businessLocation.isEmpty ? '' : '  ·  $businessLocation'}'
-        '${completed == null ? '' : '  ·  ${DateFormat.yMMMd().format(completed)} · ${DateFormat.jm().format(completed)}'}',
-        style: const TextStyle(fontSize: 12, color: Color(0xFF667085)),
-      ),
-      childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
-      // Both are needed: without expandedAlignment the answers Column
-      // shrink-wraps and floats to the center of the tile.
-      expandedAlignment: Alignment.topLeft,
-      expandedCrossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (answers.isEmpty)
-          const Text('No answer text recorded.', style: TextStyle(color: Color(0xFF667085)))
-        else
-          for (final entry in answers.entries) ...[
-            Text(entry.key, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF667085))),
-            const SizedBox(height: 2),
-            Text('${entry.value}'),
-            const SizedBox(height: 10),
-          ],
-      ],
-    );
-  }
 }

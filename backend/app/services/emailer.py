@@ -5,6 +5,7 @@ import smtplib
 import ssl
 import urllib.error
 import urllib.request
+from datetime import datetime
 from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
@@ -169,22 +170,71 @@ def send_simple_email(recipient: str, subject: str, body: str) -> str:
     return _deliver(recipient, subject, body)
 
 
-def _public_link(token_param: str, token: str, name: str, email: str) -> str:
-    query = urlencode({token_param: token, "name": name, "email": email})
-    return f"{settings.public_frontend_url}/?{query}"
+def _public_link(
+    token_param: str, token: str, name: str, email: str, nonce: str | None = None
+) -> str:
+    params = {token_param: token, "name": name, "email": email}
+    if nonce:
+        # The one part of this URL that is not guessable from the roster: it is
+        # what lets the public endpoints tell "the attendee we emailed" apart
+        # from "somebody who knows their address". See app.services.invites.
+        params["k"] = nonce
+    return f"{settings.public_frontend_url}/?{urlencode(params)}"
 
 
-def send_invite_email(event: TrainingEvent, attendee_name: str, recipient: str) -> str:
-    """Email an attendee their personalized post-test and/or survey links."""
+def send_invite_email(
+    event: TrainingEvent,
+    attendee_name: str,
+    recipient: str,
+    *,
+    invite_nonce: str | None = None,
+) -> str:
+    """Email an attendee their personalized post-test and/or survey links.
+
+    ``invite_nonce`` is this attendee's invite secret; when given it rides
+    along on both *internal* links -- post-test and survey -- so their
+    submissions can be credited to them without them having to retype the
+    address we already hold, and without a colleague who knows that address
+    being able to sit the test in their name. Optional, so that a caller with
+    no roster row (there is none today) still sends a working, if
+    unprivileged, email. External links are somebody else's form and get
+    nothing: the nonce is only meaningful to our own endpoints, and putting it
+    on a third-party URL would hand it to that third party.
+    """
     actions: list[tuple[str, str]] = []
-    if event.test_mode == "internal" and event.test_token:
-        actions.append(("Complete your post-test", _public_link("test", event.test_token, attendee_name, recipient)))
+    # An internal test link is only worth sending once the test actually has
+    # questions -- the same guard the check-in next-steps and the QR slide links
+    # already apply. Without it the attendee lands on a submittable quiz with
+    # nothing in it and no way to finish what the email asked for.
+    if event.test_mode == "internal" and event.test_token and event.test_questions:
+        actions.append(
+            (
+                "Complete your post-test",
+                _public_link("test", event.test_token, attendee_name, recipient, invite_nonce),
+            )
+        )
     elif event.test_mode == "external" and event.post_test_url:
         actions.append(("Complete your post-test", event.post_test_url))
     if event.survey_mode == "internal" and event.survey_token:
-        actions.append(("Complete the feedback survey", _public_link("survey", event.survey_token, attendee_name, recipient)))
+        actions.append(
+            (
+                "Complete the feedback survey",
+                _public_link(
+                    "survey", event.survey_token, attendee_name, recipient, invite_nonce
+                ),
+            )
+        )
     elif event.survey_mode == "external" and event.external_survey_url:
         actions.append(("Complete the feedback survey", event.external_survey_url))
+
+    if not actions:
+        # "Please finish the following:" with nothing under it is a dead end for
+        # the attendee and invisible to the admin. Refusing surfaces it as a
+        # per-recipient failure in the distribution report instead.
+        raise RuntimeError(
+            "This event has no post-test or survey link to send yet — add internal "
+            "questions or an external link before distributing."
+        )
 
     lines = [
         f"Hello {attendee_name},",
@@ -196,6 +246,35 @@ def send_invite_email(event: TrainingEvent, attendee_name: str, recipient: str) 
     lines.extend(f"- {label}: {url}" for label, url in actions)
     lines.extend(["", "Thank you."])
     return _deliver(recipient, f"Action needed for your {event.title} certificate", "\n".join(lines))
+
+
+def send_password_reset_email(
+    recipient: str, full_name: str, reset_url: str, expires_at: datetime
+) -> str:
+    """Send somebody the link that lets them set a new portal password.
+
+    The link is the whole message. It is deliberately not accompanied by the
+    old password, a temporary one, or any other credential -- there is nothing
+    in this body that is worth anything after the link is used once.
+    """
+    hours = settings.password_reset_ttl_hours
+    body = "\n".join(
+        [
+            f"Hello {full_name},",
+            "",
+            "A password reset was requested for your CEU portal account. "
+            "Open the link below to choose a new password:",
+            "",
+            reset_url,
+            "",
+            f"The link can be used once and expires in {hours} hours "
+            f"({expires_at:%Y-%m-%d %H:%M} UTC).",
+            "",
+            "If you did not ask for this, you can ignore this email — your "
+            "password has not been changed.",
+        ]
+    )
+    return _deliver(recipient, "Reset your CEU portal password", body)
 
 
 def send_certificate_email(

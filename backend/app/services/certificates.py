@@ -1,5 +1,6 @@
 import io
 import logging
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
@@ -12,6 +13,7 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen.canvas import Canvas
 
 from app.core.config import settings
+from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
 from app.services import storage
 
@@ -25,6 +27,14 @@ DEFAULT_CERTIFICATE_FIELDS: dict[str, dict] = {
     "training_date": {"x": 306, "y": 388, "size": 15, "align": "center", "color": "#1b3a5b", "font": "Helvetica"},
     "course_instructor": {"x": 220, "y": 332, "size": 13, "align": "left", "color": "#2f78b5", "font": "Helvetica"},
 }
+
+
+# ReportLab stamps a creation timestamp and a random document id into every PDF
+# unless it is told to be invariant. A certificate of record has to re-issue
+# byte-for-byte identically, so determinism wins over the (misleading anyway --
+# it would show the re-render time) embedded timestamp. The issue time lives on
+# the certificate row.
+_INVARIANT = 1
 
 
 def make_certificate_number(event_id: int) -> str:
@@ -49,7 +59,49 @@ def _field_values(link: EventAttendee) -> dict[str, str]:
     }
 
 
+@dataclass(frozen=True)
+class CertificateContent:
+    """Every input the renderer needs, detached from the live event row.
+
+    A certificate is a record: once issued, the document must never change. The
+    renderer therefore takes this value object rather than reading
+    ``link.event.*``, so a re-issue can be driven from the snapshot stored on
+    the certificate at issue time instead of from an event an admin may have
+    edited since.
+    """
+
+    values: dict[str, str]
+    event_title: str
+    certificate_title: str
+    ceu_hours: str
+    template_path: str | None = None
+    layout: dict = field(default_factory=dict)
+    # "snapshot" when rebuilt from the issued record, "live" when read from the
+    # current event row. Only ever "live" for a first issue, a preview, or a
+    # pre-snapshot legacy certificate.
+    source: str = "live"
+
+
+def content_from_link(link: EventAttendee) -> CertificateContent:
+    """Renderer inputs read from the event as it stands right now."""
+    event = link.event
+    return CertificateContent(
+        values=_field_values(link),
+        event_title=event.title,
+        certificate_title=event.certificate_title,
+        ceu_hours=str(event.ceu_hours),
+        template_path=event.certificate_template_path,
+        layout=event.certificate_fields or {},
+        source="live",
+    )
+
+
 def certificate_snapshot(link: EventAttendee) -> dict:
+    """The immutable record of what a certificate says, stored at issue time.
+
+    Anything the renderer reads has to be in here, or a re-issue would silently
+    pick up a later edit to the event.
+    """
     return {
         "event_title": link.event.title,
         "event_date": link.event.event_date.isoformat(),
@@ -59,8 +111,47 @@ def certificate_snapshot(link: EventAttendee) -> dict:
         "certificate_title": link.event.certificate_title,
         "template_version": link.event.certificate_template_version,
         "template_path": link.event.certificate_template_path,
+        # Field placement is part of the document's appearance, so it belongs in
+        # the snapshot too. Snapshots written before this key existed fall back
+        # to the event's current layout (see content_from_snapshot).
+        "certificate_fields": link.event.certificate_fields or {},
         "fields": _field_values(link),
     }
+
+
+def content_from_snapshot(snapshot: dict | None, fallback_layout: dict | None = None) -> CertificateContent | None:
+    """Renderer inputs rebuilt from an issued certificate's snapshot.
+
+    Returns None when the snapshot is missing or too incomplete to render from,
+    which is the caller's cue to fall back to live data.
+    """
+    if not isinstance(snapshot, dict):
+        return None
+    values = snapshot.get("fields")
+    if not isinstance(values, dict) or not values.get("attendee_name"):
+        return None
+    layout = snapshot.get("certificate_fields")
+    if layout is None:
+        # Pre-dates the layout being captured: the placement is not part of this
+        # record, so the event's current layout is the only source for it. The
+        # printed *values* still come from the snapshot.
+        logger.info("Certificate snapshot has no stored field layout; using the event's current layout")
+        layout = fallback_layout or {}
+    return CertificateContent(
+        # Every field the built-in design prints must be present, even as an
+        # empty string, so a partial snapshot degrades to a blank line instead
+        # of failing the re-issue outright.
+        values={
+            **dict.fromkeys(DEFAULT_CERTIFICATE_FIELDS, ""),
+            **{key: str(value or "") for key, value in values.items()},
+        },
+        event_title=snapshot.get("event_title") or "",
+        certificate_title=snapshot.get("certificate_title") or "Certificate of Completion",
+        ceu_hours=str(snapshot.get("ceu_hours") or ""),
+        template_path=snapshot.get("template_path"),
+        layout=layout,
+        source="snapshot",
+    )
 
 
 def _fitted_size(text: str, font: str, size: float, max_width: float) -> float:
@@ -159,7 +250,7 @@ def _overlay_on_pdf(
         ) from exc
 
     buffer = io.BytesIO()
-    canvas = Canvas(buffer, pagesize=(width, height))
+    canvas = Canvas(buffer, pagesize=(width, height), invariant=_INVARIANT)
     _draw_fields(canvas, width, height, values, layout)
     if preview:
         _watermark(canvas, width, height)
@@ -175,17 +266,19 @@ def _overlay_on_pdf(
 
 
 def _legacy_certificate(
-    link: EventAttendee,
+    content: CertificateContent,
     certificate_number: str,
-    values: dict[str, str],
     output_path: Path,
     preview: bool,
 ) -> Path:
     """Built-in landscape design used when no branded PDF template is uploaded."""
-    canvas = Canvas(str(output_path), pagesize=landscape(letter))
+    values = content.values
+    canvas = Canvas(str(output_path), pagesize=landscape(letter), invariant=_INVARIANT)
     width, height = landscape(letter)
-    template_path = link.event.certificate_template_path
-    if template_path and Path(template_path).exists():
+    template_path = content.template_path
+    # ensure_local is a plain existence check on local storage and re-fetches
+    # the image from the bucket when the local copy was lost.
+    if template_path and storage.ensure_local(Path(template_path)):
         try:
             canvas.drawImage(
                 ImageReader(template_path), 0, 0, width=width, height=height, preserveAspectRatio=False, mask="auto"
@@ -206,7 +299,7 @@ def _legacy_certificate(
 
     canvas.setFillColor(HexColor("#17324d"))
     canvas.setFont("Helvetica-Bold", 30)
-    canvas.drawCentredString(width / 2, height - 125, link.event.certificate_title.upper())
+    canvas.drawCentredString(width / 2, height - 125, content.certificate_title.upper())
     canvas.setFont("Helvetica", 13)
     canvas.drawCentredString(width / 2, height - 165, "This certifies that")
     max_text_width = width - 120
@@ -214,10 +307,10 @@ def _legacy_certificate(
     canvas.drawCentredString(width / 2, height - 215, values["attendee_name"])
     canvas.setFont("Helvetica", 13)
     canvas.drawCentredString(width / 2, height - 255, "successfully completed")
-    canvas.setFont("Helvetica-Bold", _fitted_size(link.event.title, "Helvetica-Bold", 19, max_text_width))
-    canvas.drawCentredString(width / 2, height - 292, link.event.title)
+    canvas.setFont("Helvetica-Bold", _fitted_size(content.event_title, "Helvetica-Bold", 19, max_text_width))
+    canvas.drawCentredString(width / 2, height - 292, content.event_title)
     canvas.setFont("Helvetica", 12)
-    canvas.drawCentredString(width / 2, height - 328, f"{values['training_date']}  |  {link.event.ceu_hours} CEU hours")
+    canvas.drawCentredString(width / 2, height - 328, f"{values['training_date']}  |  {content.ceu_hours} CEU hours")
     canvas.line(width / 2 - 130, 135, width / 2 + 130, 135)
     instructor_line = values["course_instructor"] or settings.certificate_issuer_name
     canvas.setFont("Helvetica", _fitted_size(instructor_line, "Helvetica", 11, max_text_width))
@@ -230,32 +323,82 @@ def _legacy_certificate(
     return output_path
 
 
+def render_certificate_pdf(
+    content: CertificateContent,
+    certificate_number: str,
+    output_path: Path | None = None,
+    preview: bool = False,
+) -> Path:
+    """Render a certificate from an explicit set of inputs (live or snapshot)."""
+    output = output_path or settings.certificates_dir / f"{certificate_number}.pdf"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    template_path = content.template_path
+    # A branded PDF template (e.g. the NMEDA cert) is stamped with the variable
+    # fields; image templates and the no-template case use the built-in design.
+    # ensure_local re-fetches the template from Supabase Storage if the local
+    # copy was lost (ephemeral disk); with local-only storage it is a plain
+    # existence check.
+    if template_path and Path(template_path).suffix.lower() == ".pdf":
+        if storage.ensure_local(Path(template_path)):
+            result = _overlay_on_pdf(template_path, content.values, content.layout, output, preview)
+        else:
+            # The document that was issued cannot be reproduced exactly without
+            # its template, so say so loudly rather than quietly handing back a
+            # differently-styled certificate under the same number.
+            logger.error(
+                "Certificate %s was issued on PDF template %s, which is missing from storage; "
+                "falling back to the built-in design. The re-issued PDF will not match the original.",
+                certificate_number,
+                template_path,
+            )
+            result = _legacy_certificate(content, certificate_number, output, preview)
+    else:
+        result = _legacy_certificate(content, certificate_number, output, preview)
+    if not preview:
+        # Previews are throwaway; real certificates are mirrored to the
+        # remote backend (no-op when only local storage is configured).
+        storage.mirror_file(result)
+    return result
+
+
 def generate_certificate_pdf(
     link: EventAttendee,
     certificate_number: str,
     output_path: Path | None = None,
     preview: bool = False,
 ) -> Path:
-    output = output_path or settings.certificates_dir / f"{certificate_number}.pdf"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    values = _field_values(link)
-    layout = link.event.certificate_fields or {}
-    template_path = link.event.certificate_template_path
-    # A branded PDF template (e.g. the NMEDA cert) is stamped with the variable
-    # fields; image templates and the no-template case use the built-in design.
-    # ensure_local re-fetches the template from Supabase Storage if the local
-    # copy was lost (ephemeral disk); with local-only storage it is a plain
-    # existence check.
-    if (
-        template_path
-        and Path(template_path).suffix.lower() == ".pdf"
-        and storage.ensure_local(Path(template_path))
-    ):
-        result = _overlay_on_pdf(template_path, values, layout, output, preview)
-    else:
-        result = _legacy_certificate(link, certificate_number, values, output, preview)
-    if not preview:
-        # Previews are throwaway; real certificates are mirrored to the
-        # remote backend (no-op when only local storage is configured).
-        storage.mirror_file(result)
-    return result
+    """Render from the event as it stands now.
+
+    Correct for a first issue and for previews. Re-issuing an existing
+    certificate must go through reissue_certificate_pdf instead.
+    """
+    return render_certificate_pdf(content_from_link(link), certificate_number, output_path, preview)
+
+
+def reissue_certificate_pdf(
+    link: EventAttendee,
+    certificate: Certificate,
+    output_path: Path | None = None,
+) -> Path:
+    """Rebuild an already-issued certificate's PDF.
+
+    Renders from the snapshot taken at issue time, so the reproduced document is
+    the one that was issued even if the event has been renamed, re-dated or
+    re-instructored since. Certificate numbers are permanent references; two
+    different documents must never share one.
+
+    Only rows written before snapshots existed (or with an unusable snapshot)
+    fall back to live event data, and that fallback is logged as a warning
+    because the result is not guaranteed to match what the holder received.
+    """
+    content = content_from_snapshot(
+        certificate.event_snapshot, fallback_layout=link.event.certificate_fields or {}
+    )
+    if content is None:
+        logger.warning(
+            "Certificate %s has no usable issue-time snapshot; re-rendering from the "
+            "current event record. The result may differ from the document that was issued.",
+            certificate.certificate_number,
+        )
+        content = content_from_link(link)
+    return render_certificate_pdf(content, certificate.certificate_number, output_path)

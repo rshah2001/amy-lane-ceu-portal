@@ -22,11 +22,29 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(subject: str, role: str, expires_delta: timedelta | None = None) -> str:
+# The claim carrying User.token_version. Short, because it is minted into every
+# token; named here so the minting and the checking side cannot drift apart.
+TOKEN_VERSION_CLAIM = "tv"
+
+
+def create_access_token(
+    subject: str, role: str, token_version: int, expires_delta: timedelta | None = None
+) -> str:
+    """Mint an access token bound to the credential version it was issued under.
+
+    ``token_version`` is required rather than defaulted: a caller that forgets
+    it would mint a token that outlives the next password change, which is the
+    exact hole this claim exists to close.
+    """
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
     )
-    to_encode: dict[str, Any] = {"sub": subject, "role": role, "exp": expire}
+    to_encode: dict[str, Any] = {
+        "sub": subject,
+        "role": role,
+        TOKEN_VERSION_CLAIM: token_version,
+        "exp": expire,
+    }
     return jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
 
 

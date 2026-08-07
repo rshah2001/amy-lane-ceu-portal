@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.event_attendee import EventAttendee
 from app.services.identity import is_valid_email
@@ -14,10 +14,16 @@ def evaluate_link(link: EventAttendee) -> EventAttendee:
     link.has_valid_email = is_valid_email(link.attendee.email)
     if not link.attended:
         reasons.append("Not found on attendance sheet")
-    if not link.test_completed:
-        reasons.append("Post-test not completed")
-    elif link.test_score is None or link.test_score < PASSING_SCORE:
-        reasons.append("Post-test score below 80%")
+    # The post-test only blocks eligibility when the event is configured to have
+    # one (same shape as the survey rule below). Without this gate an event with
+    # no post-test at all marks every attendee permanently ineligible, since
+    # nothing can ever set test_completed. test_required defaults to TRUE, so an
+    # event only stops requiring a test when an admin says so explicitly.
+    if link.event.test_required:
+        if not link.test_completed:
+            reasons.append("Post-test not completed")
+        elif link.test_score is None or link.test_score < PASSING_SCORE:
+            reasons.append("Post-test score below 80%")
     # The feedback survey is encouraged (it supports association renewals) and
     # only blocks eligibility when the event is configured to require it.
     if link.event.survey_required and not link.survey_completed:
@@ -40,6 +46,11 @@ def lifecycle_status(link: EventAttendee) -> str:
     """Single human-facing status spanning the whole certificate lifecycle."""
     certificate = link.certificate
     if certificate:
+        # Revocation outranks every delivery milestone: a withdrawn certificate
+        # may well have been emailed and downloaded, and saying "downloaded"
+        # about it would read as "in good standing".
+        if certificate.is_revoked:
+            return "revoked"
         if certificate.downloaded_at:
             return "downloaded"
         if certificate.delivered_at:
@@ -53,7 +64,9 @@ def lifecycle_status(link: EventAttendee) -> str:
         return "eligible"
     if not link.attended:
         return "pending_attendance"
-    if not link.test_completed or link.test_score is None or link.test_score < PASSING_SCORE:
+    if link.event.test_required and (
+        not link.test_completed or link.test_score is None or link.test_score < PASSING_SCORE
+    ):
         return "pending_test"
     if link.event.survey_required and not link.survey_completed:
         return "pending_survey"
@@ -61,9 +74,30 @@ def lifecycle_status(link: EventAttendee) -> str:
 
 
 def recalculate_event(db: Session, event_id: int) -> list[EventAttendee]:
+    """Re-derive eligibility for every attendee on one event.
+
+    This runs on the hot paths -- every public check-in, post-test and survey
+    submission calls it, as does every compliance review -- so it is loaded
+    eagerly on purpose. ``evaluate_link`` reads ``link.attendee.email`` and
+    ``link.event``; without the eager loads that is one lazy SELECT per link,
+    which measured at 207 statements for a single check-in on a 200-person
+    event. ``selectinload`` fetches all the attendees in one extra query
+    instead, taking the same request to a handful of statements regardless of
+    roster size.
+
+    ``event`` is eager-loaded too. Every link here shares one event, so the
+    identity map already collapsed it to a single lazy query -- but that query
+    fired from inside the loop, which meant the cost of this function depended
+    on whether the caller happened to have the event loaded already. Stating it
+    keeps the query count fixed and independent of the caller.
+    """
     links = list(
         db.scalars(
             select(EventAttendee)
+            .options(
+                selectinload(EventAttendee.attendee),
+                selectinload(EventAttendee.event),
+            )
             .where(EventAttendee.event_id == event_id)
             .order_by(EventAttendee.id)
         )

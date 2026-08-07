@@ -19,13 +19,14 @@ A working multi-format CEU compliance portal with a Flutter Web enterprise dashb
 - Event creation and role-scoped event access
 - Registration, attendance, post-test, and survey uploads from CSV, XLSX, PNG, JPG, or JPEG
 - Name/email normalization and cross-file attendee matching
-- Eligibility engine requiring attendance, completed post-test with a score of at least 80%, and a valid email (the feedback survey is tracked and encouraged but does not block certificates)
+- Eligibility engine requiring attendance, a valid email, and — on events configured to require them — a post-test scored at least 80% and a completed feedback survey. Both requirements are explicit per-event flags (`test_required`, `survey_required`); the post-test one defaults to on, so an event never starts granting credit without one by accident. An event that requires a post-test but has none configured reports a setup warning, because otherwise every attendee stays permanently ineligible.
+- Post-test scores are read with the unit decided once per column (percentages, `x/10`, or `x/1`). A column that is entirely 0–10 with no `%` and no fraction is genuinely ambiguous — `8` could be 8% or 8/10 — so the import refuses it and asks, rather than guessing a failing score into a passing one.
 - Admin approvals
 - PDF certificate generation
 - SMTP delivery or safe local email-log mode
 - Certificate resend history and timestamps
 - Attendee search, audit log viewer, and annual CSV report export
-- Source files, decisions, certificates, and email attempts retained in PostgreSQL/storage for the configured 7-year policy
+- Source files, decisions, certificates, and email attempts retained in PostgreSQL/storage for the configured 7-year policy. The retention floor is enforced, not just documented: an event holding a delivered certificate inside its window cannot be deleted, and withdrawing a certificate issued in error revokes it — the record and its number survive, and public verification reports it as revoked — rather than destroying the record. Purging expired records is an operator-run step (`python -m app.services.retention`, dry-run by default) rather than an automatic background job, so removing compliance records is always a reviewed action.
 
 ## One-Command Local Start (no Docker)
 

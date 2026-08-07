@@ -230,6 +230,7 @@ class ComplianceRecord {
     this.certificateNumber,
     this.certificateSentAt,
     this.certificateDownloadedAt,
+    this.certificateRevokedAt,
   });
 
   factory ComplianceRecord.fromJson(Map<String, dynamic> json) => ComplianceRecord(
@@ -255,6 +256,9 @@ class ComplianceRecord {
         certificateDownloadedAt: json['certificate_downloaded_at'] == null
             ? null
             : DateTime.parse(json['certificate_downloaded_at'] as String),
+        certificateRevokedAt: json['certificate_revoked_at'] == null
+            ? null
+            : DateTime.parse(json['certificate_revoked_at'] as String),
       );
 
   final int id;
@@ -275,4 +279,11 @@ class ComplianceRecord {
   final String? certificateNumber;
   final DateTime? certificateSentAt;
   final DateTime? certificateDownloadedAt;
+
+  /// Set once the certificate has been withdrawn. The row and its number are
+  /// kept for the seven-year retention period, so "revoked" is a state a
+  /// record is *in* rather than a record that has gone.
+  final DateTime? certificateRevokedAt;
+
+  bool get certificateRevoked => certificateRevokedAt != null;
 }

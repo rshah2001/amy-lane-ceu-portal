@@ -5,6 +5,7 @@ import '../core/file_download.dart';
 import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
+import '../widgets/portal_table.dart';
 
 class CertificateCenterPage extends StatefulWidget {
   const CertificateCenterPage({
@@ -22,7 +23,8 @@ class CertificateCenterPage extends StatefulWidget {
   State<CertificateCenterPage> createState() => _CertificateCenterPageState();
 }
 
-class _CertificateCenterPageState extends State<CertificateCenterPage> {
+class _CertificateCenterPageState extends State<CertificateCenterPage>
+    with LatestRequest {
   List<TrainingEvent>? events;
   TrainingEvent? event;
   List<ComplianceRecord>? records;
@@ -38,11 +40,21 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
     loadEvents();
   }
 
+  /// Shows a failure and speaks it — see the note on the same helper in
+  /// compliance_page.dart.
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
+  }
+
   Future<void> loadEvents() async {
+    final request = beginRequest();
     try {
       final result = await widget.session.api.get('/events') as List;
       final loaded = result.map((item) => TrainingEvent.fromJson(item as Map<String, dynamic>)).toList();
-      if (!mounted) return;
+      if (!request.isCurrent) return;
       setState(() {
         events = loaded;
         if (loaded.isEmpty) {
@@ -58,23 +70,31 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       });
       if (event != null) await loadRecords();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
   }
 
+  /// The most safety-critical guard in the app.
+  ///
+  /// These rows carry Send and Resend, which put a real certificate in a real
+  /// person's inbox. Switching the event dropdown twice leaves two reads in
+  /// flight, and without this the slower, older one lands last: the dropdown
+  /// says one event while the table shows another's attendees, and the admin
+  /// presses Send on the row under their cursor.
   Future<void> loadRecords() async {
     if (event == null) return;
+    final request = beginRequest();
     setState(() {
       records = null;
       error = null;
     });
     try {
       final result = await widget.session.api.get('/events/${event!.id}/compliance') as List;
-      if (mounted) {
+      if (request.isCurrent) {
         setState(() => records = result.map((item) => ComplianceRecord.fromJson(item as Map<String, dynamic>)).toList());
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (request.isCurrent) _fail(exception);
     }
   }
 
@@ -103,7 +123,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
         const SnackBar(content: Text('Preview downloaded — check your Downloads folder.')),
       );
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => workingId = null);
     }
@@ -140,6 +160,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       ),
     );
     if (confirmed != true || !mounted) return;
+    final theme = Theme.of(context);
     setState(() {
       bulkWorking = true;
       error = null;
@@ -169,8 +190,14 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                   const SizedBox(height: 12),
                   for (final line in details)
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Text('• $line', style: const TextStyle(fontSize: 12, color: Color(0xFFB42318))),
+                      padding: const EdgeInsets.only(bottom: Space.xxs),
+                      child: Text(
+                        '• $line',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: theme.portal.danger,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
                     ),
                 ],
               ],
@@ -183,7 +210,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       );
       await loadRecords();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => bulkWorking = false);
     }
@@ -233,7 +260,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       }
       await loadEvents();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => uploadingTemplate = false);
     }
@@ -245,7 +272,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       await widget.session.api.post(path);
       await loadRecords();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => workingId = null);
     }
@@ -255,9 +282,18 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
   // bypassing the eligibility rules (audited on the backend).
   Future<void> issueManually() async {
     if (event == null) return;
+    final theme = Theme.of(context);
     final formKey = GlobalKey<FormState>();
     final nameController = TextEditingController();
     final emailController = TextEditingController();
+    final nameField = (
+      key: GlobalKey<FormFieldState<String>>(),
+      focus: FocusNode(debugLabel: 'recipient name'),
+    );
+    final emailField = (
+      key: GlobalKey<FormFieldState<String>>(),
+      focus: FocusNode(debugLabel: 'recipient email'),
+    );
     var sendNow = true;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -275,23 +311,27 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                   Text(
                     'For "${event!.title}". The recipient does not need to meet the '
                     'eligibility requirements — the manual issue is recorded in the audit log.',
-                    style: const TextStyle(fontSize: 13, color: Color(0xFF667085)),
+                    style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.textSecondary),
                   ),
                   const SizedBox(height: 14),
                   TextFormField(
+                    key: nameField.key,
+                    focusNode: nameField.focus,
                     controller: nameController,
                     autofocus: true,
                     decoration: const InputDecoration(labelText: 'Full name'),
                     validator: (v) => v == null || v.trim().length < 2 ? 'Enter the recipient name' : null,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: Space.sm),
                   TextFormField(
+                    key: emailField.key,
+                    focusNode: emailField.focus,
                     controller: emailController,
                     keyboardType: TextInputType.emailAddress,
                     decoration: const InputDecoration(labelText: 'Email address'),
                     validator: emailValidator,
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Space.xxs + 2),
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
@@ -307,7 +347,9 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
-                if (formKey.currentState!.validate()) Navigator.pop(context, true);
+                if (validateAndFocusFirstError(context, formKey, [nameField, emailField])) {
+                  Navigator.pop(context, true);
+                }
               },
               child: const Text('Issue certificate'),
             ),
@@ -315,29 +357,140 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
         ),
       ),
     );
+    nameField.focus.dispose();
+    emailField.focus.dispose();
+    // The typed values are read out before the controllers go, because they are
+    // needed in the confirmation message and in the request itself. The
+    // controllers were previously never disposed at all, so every open of this
+    // dialog leaked two.
+    final fullName = nameController.text.trim();
+    final emailAddress = emailController.text.trim();
+    nameController.dispose();
+    emailController.dispose();
     if (confirmed != true || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     setState(() => error = null);
     try {
       await widget.session.api.post('/events/${event!.id}/certificates/issue', {
-        'full_name': nameController.text.trim(),
-        'email': emailController.text.trim(),
+        'full_name': fullName,
+        'email': emailAddress,
         'send_email': sendNow,
       });
       messenger.showSnackBar(SnackBar(
         content: Text(sendNow
-            ? 'Certificate issued and emailed to ${emailController.text.trim()}.'
-            : 'Certificate issued for ${nameController.text.trim()}.'),
+            ? 'Certificate issued and emailed to $emailAddress.'
+            : 'Certificate issued for $fullName.'),
       ));
       await loadRecords();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
+  }
+
+  List<TableColumn<ComplianceRecord>> _columns(BuildContext context) {
+    final theme = Theme.of(context);
+    return [
+      TableColumn<ComplianceRecord>(
+        label: 'Attendee',
+        width: 230,
+        flex: 1,
+        sortValue: (record) => record.fullName,
+        cell: (context, record) => Text(
+          record.fullName,
+          style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+        ),
+      ),
+      TableColumn<ComplianceRecord>(
+        label: 'Approval',
+        width: 180,
+        sortValue: (record) => record.certificateRevoked
+            ? 'revoked'
+            : record.approved
+                ? 'approved'
+                : 'awaiting',
+        cell: (context, record) => record.certificateRevoked
+            ? lifecycleBadge('revoked')
+            : StatusBadge(
+                record.approved ? 'APPROVED' : 'AWAITING APPROVAL',
+                tone: record.approved ? BadgeTone.success : BadgeTone.warning,
+              ),
+      ),
+      TableColumn<ComplianceRecord>(
+        label: 'Certificate',
+        width: 210,
+        sortValue: (record) => record.certificateNumber,
+        cell: (context, record) => Text(record.certificateNumber ?? 'Not generated'),
+      ),
+      TableColumn<ComplianceRecord>(
+        label: 'Sent',
+        width: 200,
+        // Sorted on the timestamp rather than the rendered string, so the
+        // "who has been waiting longest" question answers correctly and
+        // never-sent rows fall to the bottom instead of sorting under N.
+        sortValue: (record) => record.certificateRevoked
+            ? record.certificateRevokedAt
+            : record.certificateSentAt,
+        cell: (context, record) => Text(
+          record.certificateRevoked
+              ? 'Revoked ${formatDateTime(record.certificateRevokedAt!)}'
+              : record.certificateSentAt == null
+                  ? 'Not sent'
+                  : formatDateTime(record.certificateSentAt!),
+        ),
+      ),
+      TableColumn<ComplianceRecord>(
+        label: 'Actions',
+        // Three labelled buttons; they wrap onto a second line rather than
+        // being clipped when the column is at its floor.
+        width: 380,
+        cell: (context, record) => Wrap(
+          spacing: Space.xs,
+          runSpacing: Space.xxs,
+          children: [
+            OutlinedButton.icon(
+              // Approved covers manually issued / override-approved
+              // attendees, who are never "eligible".
+              onPressed: !(record.eligible || record.approved) || workingId == record.id
+                  ? null
+                  : () => preview(record),
+              icon: const Icon(Icons.visibility_outlined, size: 18),
+              label: const Text('Preview'),
+            ),
+            OutlinedButton.icon(
+              onPressed: !record.approved ||
+                      record.certificateNumber != null ||
+                      workingId == record.id
+                  ? null
+                  : () => generate(record),
+              icon: const Icon(Icons.workspace_premium_outlined, size: 18),
+              label: Text(record.certificateNumber == null ? 'Generate' : 'Generated'),
+            ),
+            // A revoked certificate keeps its number and its sent_at, so
+            // "Resend" would otherwise look available — and the server refuses
+            // it with a 409.
+            ElevatedButton.icon(
+              onPressed: record.certificateNumber == null ||
+                      record.certificateRevoked ||
+                      workingId == record.id
+                  ? null
+                  : () => send(record),
+              icon: const Icon(Icons.send_outlined, size: 18),
+              label: Text(record.certificateSentAt == null ? 'Send' : 'Resend'),
+            ),
+          ],
+        ),
+      ),
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
-    final visibleRecords = records?.where((record) => record.approved || record.eligible).toList();
+    // Revoked rows are neither approved nor eligible any more, but dropping
+    // them here would hide a certificate that still exists and still has a
+    // number people can look up. They stay, marked.
+    final visibleRecords = records
+        ?.where((record) => record.approved || record.eligible || record.certificateRevoked)
+        .toList();
     return Padding(
       padding: pagePadding,
       child: Center(
@@ -359,34 +512,24 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                         : const Icon(Icons.send_outlined),
                     label: Text(bulkWorking ? 'Working...' : 'Generate & send all approved'),
                   ),
-                  PopupMenuButton<String>(
+                  ActionMenu(
+                    label: uploadingTemplate ? 'Uploading...' : 'More',
+                    icon: uploadingTemplate
+                        ? const SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.more_horiz),
                     enabled: event != null && !uploadingTemplate && !bulkWorking,
-                    onSelected: (value) => switch (value) {
-                      'issue' => issueManually(),
-                      'template' => uploadTemplate(),
-                      _ => Future<void>.value(),
-                    },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(value: 'issue', child: Text('Issue certificate manually')),
-                      PopupMenuItem(value: 'template', child: Text('Upload certificate template')),
+                    actions: [
+                      MenuAction('Issue certificate manually', issueManually),
+                      MenuAction('Upload certificate template', uploadTemplate),
                     ],
-                    child: IgnorePointer(
-                      child: OutlinedButton.icon(
-                        onPressed: () {},
-                        icon: uploadingTemplate
-                            ? const SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.more_horiz),
-                        label: Text(uploadingTemplate ? 'Uploading...' : 'More'),
-                      ),
-                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               if (events == null)
                 error != null
                     ? InlineAlert(message: error!, onRetry: loadEvents, onDismiss: () => setState(() => error = null))
-                    : const LoadingPanel()
+                    : const LoadingPanel(label: 'Loading events')
               else if (events!.isEmpty)
                 const Expanded(
                   child: EmptyState(
@@ -411,74 +554,30 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                   },
                 ),
                 if (error != null) ...[
-                  const SizedBox(height: 10),
+                  const SizedBox(height: Space.xs + 2),
                   InlineAlert(message: error!, onRetry: loadRecords, onDismiss: () => setState(() => error = null)),
                 ],
-                const SizedBox(height: 14),
+                const SizedBox(height: Space.sm + 2),
                 Expanded(
                   child: Card(
-                    child: visibleRecords == null
-                        ? const LoadingPanel()
-                        : visibleRecords.isEmpty
-                            ? const EmptyState(
-                                icon: Icons.workspace_premium_outlined,
-                                message: 'No attendees are ready for certificates',
-                                detail: 'Attendees appear here once they are eligible or approved in the compliance review.',
-                              )
-                            : SingleChildScrollView(
-                            child: SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: DataTable(
-                                columns: const [
-                                  DataColumn(label: Text('Attendee')),
-                                  DataColumn(label: Text('Approval')),
-                                  DataColumn(label: Text('Certificate')),
-                                  DataColumn(label: Text('Sent')),
-                                  DataColumn(label: Text('Actions')),
-                                ],
-                                rows: visibleRecords
-                                    .map(
-                                      (record) => DataRow(
-                                        cells: [
-                                          DataCell(SizedBox(width: 230, child: Text(record.fullName, style: const TextStyle(fontWeight: FontWeight.w600)))),
-                                          DataCell(StatusBadge(record.approved ? 'APPROVED' : 'AWAITING APPROVAL', tone: record.approved ? BadgeTone.success : BadgeTone.warning)),
-                                          DataCell(Text(record.certificateNumber ?? 'Not generated')),
-                                          DataCell(Text(record.certificateSentAt == null ? 'Not sent' : formatDateTime(record.certificateSentAt!))),
-                                          DataCell(
-                                            Wrap(
-                                              spacing: 8,
-                                              children: [
-                                                OutlinedButton.icon(
-                                                  // Approved covers manually issued / override-approved
-                                                  // attendees, who are never "eligible".
-                                                  onPressed: !(record.eligible || record.approved) || workingId == record.id
-                                                      ? null
-                                                      : () => preview(record),
-                                                  icon: const Icon(Icons.visibility_outlined, size: 18),
-                                                  label: const Text('Preview'),
-                                                ),
-                                                OutlinedButton.icon(
-                                                  onPressed: !record.approved || record.certificateNumber != null || workingId == record.id
-                                                      ? null
-                                                      : () => generate(record),
-                                                  icon: const Icon(Icons.workspace_premium_outlined, size: 18),
-                                                  label: Text(record.certificateNumber == null ? 'Generate' : 'Generated'),
-                                                ),
-                                                ElevatedButton.icon(
-                                                  onPressed: record.certificateNumber == null || workingId == record.id ? null : () => send(record),
-                                                  icon: const Icon(Icons.send_outlined, size: 18),
-                                                  label: Text(record.certificateSentAt == null ? 'Send' : 'Resend'),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    )
-                                    .toList(),
-                              ),
-                            ),
-                          ),
+                    child: PortalTable<ComplianceRecord>(
+                      caption: 'Certificates for this event',
+                      columns: _columns(context),
+                      rows: visibleRecords,
+                      loadingLabel: 'Loading certificate records',
+                      emptyIcon: Icons.workspace_premium_outlined,
+                      emptyMessage: 'No attendees are ready for certificates',
+                      emptyDetail: 'Attendees appear here once they are eligible or '
+                          'approved in the compliance review.',
+                      // Paged. Every row here has a Send button next to a name,
+                      // so the reader has to be certain which page they are on
+                      // and that it stopped moving — an infinite scroller that
+                      // grows under the cursor is the wrong shape for that.
+                      rowsPerPage: 25,
+                      initialSortColumn: 0,
+                      rowKey: (record) => record.id,
+                      rowSemanticLabel: (record) => record.fullName,
+                    ),
                   ),
                 ),
               ],

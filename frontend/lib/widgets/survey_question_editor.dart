@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'common.dart';
+
 /// Default options offered when a survey question is switched to multiple
 /// choice — the agreement scale the client uses on her paper surveys.
 const _agreementScale = [
@@ -75,6 +77,7 @@ class SurveyQuestionEditor extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).portal;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -88,7 +91,7 @@ class SurveyQuestionEditor extends StatelessWidget {
                 validator: (value) => value == null || value.trim().isEmpty ? 'Enter the question or remove it' : null,
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: Space.xs),
             SizedBox(
               width: 180,
               child: DropdownButtonFormField<String>(
@@ -104,9 +107,9 @@ class SurveyQuestionEditor extends StatelessWidget {
                 },
               ),
             ),
-            const SizedBox(width: 4),
+            const SizedBox(width: Space.xxs),
             IconButton(
-              tooltip: 'Remove survey question',
+              tooltip: 'Remove survey question $index',
               onPressed: onRemove,
               icon: const Icon(Icons.delete_outline, size: 20),
             ),
@@ -114,15 +117,17 @@ class SurveyQuestionEditor extends StatelessWidget {
         ),
         if (draft.type == 'choice')
           Padding(
-            padding: const EdgeInsets.only(left: 24, top: 8),
+            padding: const EdgeInsets.only(left: Space.xl, top: Space.xs),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 for (var o = 0; o < draft.options.length; o++)
                   Row(
                     children: [
-                      const Icon(Icons.radio_button_unchecked, size: 16, color: Color(0xFF98A2B3)),
-                      const SizedBox(width: 8),
+                      ExcludeSemantics(
+                        child: Icon(Icons.radio_button_unchecked, size: 16, color: colors.textTertiary),
+                      ),
+                      const SizedBox(width: Space.xs),
                       Expanded(
                         child: TextFormField(
                           controller: draft.options[o],
@@ -132,7 +137,7 @@ class SurveyQuestionEditor extends StatelessWidget {
                         ),
                       ),
                       IconButton(
-                        tooltip: 'Remove option',
+                        tooltip: 'Remove option ${o + 1}',
                         onPressed: draft.options.length <= 2
                             ? null
                             : () {

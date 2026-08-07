@@ -403,7 +403,8 @@ class TestSheetFormatHint:
 
     def test_same_teams_csv_without_hint_reports_no_names(self, client, admin, event):
         # Without the hint the summary line is taken as the header, so no names
-        # are found — the response must say so instead of silently succeeding.
+        # are found. An import with nothing in it is refused outright: it would
+        # otherwise reset the event's attendance and put nothing back.
         response = upload_csv(
             client,
             admin.headers,
@@ -412,13 +413,8 @@ class TestSheetFormatHint:
             TEAMS_STYLE_CSV,
             filename="teams-attendance.csv",
         )
-        assert response.status_code == 201, response.text
-        body = response.json()
-        assert body["parse_status"] == "processed_with_errors"
-        assert any(
-            "No attendee names could be read" in error["message"]
-            for error in body["parse_errors"]
-        )
+        assert response.status_code == 400, response.text
+        assert "No attendee names could be read" in response.json()["detail"]
 
     def test_virtual_hint_steers_xlsx_header_detection(self, client, admin, event):
         # The summary line "Meeting name" would win default header detection
@@ -504,18 +500,19 @@ class TestSheetFormatHint:
 
 
 class TestZeroNamesFeedback:
+    """A file with no attendees in it is refused, not reported as processed.
+
+    The message is the same one commit 6b6d062 introduced; it now arrives as a
+    400 because an empty import is also a destructive one (see
+    test_import_integrity.py).
+    """
+
     def test_header_only_csv_reports_no_names(self, client, admin, event):
         response = upload_csv(
             client, admin.headers, event["id"], "attendance", "Full Name,Email\n"
         )
-        assert response.status_code == 201, response.text
-        body = response.json()
-        assert body["row_count"] == 0
-        assert body["parse_status"] == "processed_with_errors"
-        assert any(
-            "No attendee names could be read" in error["message"]
-            for error in body["parse_errors"]
-        )
+        assert response.status_code == 400, response.text
+        assert "No attendee names could be read" in response.json()["detail"]
 
     def test_csv_without_name_column_reports_no_names(self, client, admin, event):
         response = upload_csv(
@@ -525,13 +522,8 @@ class TestZeroNamesFeedback:
             "attendance",
             "Widget,Count\nBolt,2\nNut,7\n",
         )
-        assert response.status_code == 201, response.text
-        body = response.json()
-        assert body["parse_status"] == "processed_with_errors"
-        assert any(
-            "No attendee names could be read" in error["message"]
-            for error in body["parse_errors"]
-        )
+        assert response.status_code == 400, response.text
+        assert "No attendee names could be read" in response.json()["detail"]
 
     def test_upload_with_names_has_no_zero_names_message(self, client, admin, event):
         response = upload_csv(
@@ -541,8 +533,17 @@ class TestZeroNamesFeedback:
         assert response.json()["parse_errors"] == []
 
 
+def problems(body: dict) -> list[dict]:
+    """Parse entries that are actual problems, dropping "how I read it" notices."""
+    return [error for error in body["parse_errors"] if error.get("level") != "info"]
+
+
 class TestPostTestScoreFormats:
-    """Presenters upload scores as percentages, fractions, or out of 10."""
+    """Presenters upload scores as percentages, fractions, or out of 10.
+
+    The unit is decided once for the whole column (see test_import_integrity),
+    so a column that is plainly percentages reads every bare number as one.
+    """
 
     def test_csv_score_formats_normalize_to_percent(self, client, admin, event):
         response = upload_csv(
@@ -553,18 +554,34 @@ class TestPostTestScoreFormats:
             "Full Name,Email,Score\n"
             "Percy Cent,percy.cent@example.com,85%\n"
             "Fran Action,fran.action@example.com,8/10\n"
-            "Tenny Scale,tenny.scale@example.com,9\n"
-            "Decy Mal,decy.mal@example.com,0.85\n"
+            "Tenny Scale,tenny.scale@example.com,90\n"
             "Plain Percent,plain.percent@example.com,72\n",
         )
         assert response.status_code == 201, response.text
-        assert response.json()["parse_errors"] == []
+        assert problems(response.json()) == []
         rows = compliance_rows_by_name(client, admin.headers, event["id"])
         assert rows["Percy Cent"]["test_score"] == 85.0
         assert rows["Fran Action"]["test_score"] == 80.0
         assert rows["Tenny Scale"]["test_score"] == 90.0
-        assert rows["Decy Mal"]["test_score"] == 85.0
         assert rows["Plain Percent"]["test_score"] == 72.0
+
+    def test_out_of_ten_column_reads_out_of_ten(self, client, admin, event):
+        # Explicit "x/10" in every row: no inference needed, and no cell is
+        # read on a unit it did not state.
+        response = upload_csv(
+            client,
+            admin.headers,
+            event["id"],
+            "post_test",
+            "Full Name,Email,Score\n"
+            "Fran Action,fran.action@example.com,8/10\n"
+            "Nina Nine,nina.nine@example.com,9/10\n",
+        )
+        assert response.status_code == 201, response.text
+        assert problems(response.json()) == []
+        rows = compliance_rows_by_name(client, admin.headers, event["id"])
+        assert rows["Fran Action"]["test_score"] == 80.0
+        assert rows["Nina Nine"]["test_score"] == 90.0
 
     def test_xlsx_percent_formatted_cell_reads_as_percentage(self, client, admin, event):
         # Excel stores a percent-formatted 90% as the number 0.9.
@@ -585,21 +602,30 @@ class TestPostTestScoreFormats:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         assert response.status_code == 201, response.text
-        assert response.json()["parse_errors"] == []
+        assert problems(response.json()) == []
         rows = compliance_rows_by_name(client, admin.headers, event["id"])
         assert rows["Exel Percent"]["test_score"] == 90.0
 
     def test_unreadable_score_reports_row_error(self, client, admin, event):
+        # One readable row keeps the import alive; the unreadable one is
+        # reported against its own row and simply not imported.
         response = upload_csv(
             client,
             admin.headers,
             event["id"],
             "post_test",
-            "Full Name,Email,Score\nBad Score,bad.score@example.com,eight\n",
+            "Full Name,Email,Score\n"
+            "Good Score,good.score@example.com,85%\n"
+            "Bad Score,bad.score@example.com,eight\n",
         )
         assert response.status_code == 201, response.text
-        errors = response.json()["parse_errors"]
+        errors = problems(response.json())
         assert len(errors) == 1 and "Invalid score" in errors[0]["message"]
+        rows = compliance_rows_by_name(client, admin.headers, event["id"])
+        assert rows["Good Score"]["test_score"] == 85.0
+        # A row that cannot be imported is not half-imported either: scores are
+        # read before anything is written, so the bad row adds no roster entry.
+        assert "Bad Score" not in rows
 
 
 class TestFileImportKeepsWebSubmissions:

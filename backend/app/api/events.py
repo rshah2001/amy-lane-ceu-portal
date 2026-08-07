@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_admin
+from app.core.clock import utc_today
 from app.db.session import get_db
 from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
@@ -26,6 +27,7 @@ from app.schemas.common import (
 )
 from app.services import storage
 from app.services.audit import record_audit
+from app.services.retention import retention_block
 from app.services.survey_template import get_survey_template
 
 PASSING_SCORE = Decimal("80")
@@ -55,10 +57,14 @@ def dashboard(
 ) -> DashboardStats:
     event_ids = visible_event_query(current_user).with_only_columns(TrainingEvent.id)
     total_events = db.scalar(select(func.count()).select_from(event_ids.subquery())) or 0
+    # "Upcoming" is a date boundary the admin sees on the dashboard, so it is
+    # taken in UTC rather than in whatever timezone the host happens to run in
+    # (see app.core.clock): an event must not stop counting as upcoming purely
+    # because the API was redeployed onto a differently-configured machine.
     upcoming_events = db.scalar(
         select(func.count()).select_from(
             visible_event_query(current_user)
-            .where(TrainingEvent.event_date >= date.today())
+            .where(TrainingEvent.event_date >= utc_today())
             .with_only_columns(TrainingEvent.id)
             .subquery()
         )
@@ -144,8 +150,11 @@ def dashboard_charts(
         .join(EventAttendee)
         .where(EventAttendee.event_id.in_(event_ids), Certificate.sent_at.is_not(None))
     )
+    # Certificate sent_at values are stored timezone-aware in UTC, so the
+    # six-month window they are bucketed into is anchored in UTC too; a
+    # host-local "today" here would slide the whole window against the data.
     monthly = Counter(dt.strftime("%Y-%m") for dt in sent_dates if dt)
-    today = date.today()
+    today = utc_today()
     months: list[ChartBucket] = []
     for offset in range(5, -1, -1):
         month = (today.month - offset - 1) % 12 + 1
@@ -249,10 +258,33 @@ def delete_event(
 ) -> Response:
     """Permanently remove an event and everything attached to it (attendees'
     links, uploads, results, certificates). The deletion itself is audited
-    with what was destroyed; the global attendee records are untouched."""
+    with what was destroyed; the global attendee records are untouched.
+
+    Refused while the event still holds a certificate inside the retention
+    period: we attest to a regulator that issued certificates are kept for
+    seven years, and the typed-DELETE confirmation is a check that the admin
+    meant to press the button, not authority to break that commitment.
+    """
     event = db.scalar(select(TrainingEvent).where(TrainingEvent.id == event_id))
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    block = retention_block(db, event)
+    if block:
+        record_audit(
+            db,
+            "event.delete_blocked",
+            "training_event",
+            event.id,
+            current_user,
+            event.id,
+            {
+                "reason": "retention_period",
+                "issued_certificates": block.certificates,
+                "retained_until": block.retained_until.isoformat(),
+            },
+        )
+        db.commit()
+        raise HTTPException(status_code=409, detail=block.message)
     certificates = list(
         db.scalars(
             select(Certificate).join(EventAttendee).where(EventAttendee.event_id == event_id)

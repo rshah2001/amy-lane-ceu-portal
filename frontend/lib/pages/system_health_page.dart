@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../core/session.dart';
-import '../core/theme.dart';
 import '../widgets/common.dart';
 
 class SystemHealthPage extends StatefulWidget {
@@ -31,22 +30,28 @@ class _SystemHealthPageState extends State<SystemHealthPage> {
       final result = await widget.session.api.get('/system/health') as Map<String, dynamic>;
       if (mounted) setState(() => health = result);
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     if (error != null) return ErrorPanel(message: error!, onRetry: load);
-    if (health == null) return const LoadingPanel();
+    if (health == null) return const LoadingPanel(label: 'Loading system health');
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     final h = health!;
     final cards = <Widget>[
       StatCard(label: 'Events created', value: '${h['events_created']}', icon: Icons.event_note_outlined, color: navy),
       StatCard(label: 'Total certificates', value: '${h['total_certificates']}', icon: Icons.workspace_premium_outlined, color: teal),
       StatCard(label: 'Certificates sent', value: '${h['certificates_sent']}', icon: Icons.send_outlined, color: gold),
-      StatCard(label: 'Active users', value: '${h['active_users']}', icon: Icons.group_outlined, color: const Color(0xFF5F6CAF)),
-      StatCard(label: 'Storage used', value: '${h['storage_human']}', icon: Icons.sd_storage_outlined, color: const Color(0xFF248A52)),
-      StatCard(label: 'Email success rate', value: '${h['email_success_rate']}%', icon: Icons.mark_email_read_outlined, color: const Color(0xFF245B85)),
+      StatCard(label: 'Active users', value: '${h['active_users']}', icon: Icons.group_outlined, color: colors.accentAlt),
+      StatCard(label: 'Storage used', value: '${h['storage_human']}', icon: Icons.sd_storage_outlined, color: colors.success),
+      StatCard(label: 'Email success rate', value: '${h['email_success_rate']}%', icon: Icons.mark_email_read_outlined, color: colors.info),
     ];
     return SingleChildScrollView(
       padding: pagePadding,
@@ -61,31 +66,32 @@ class _SystemHealthPageState extends State<SystemHealthPage> {
                 subtitle: 'Storage, certificate, user, and email delivery metrics.',
                 actions: [OutlinedButton.icon(onPressed: load, icon: const Icon(Icons.refresh), label: const Text('Refresh'))],
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: Space.md + 2),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final columns = constraints.maxWidth < 640 ? 1 : constraints.maxWidth < 980 ? 2 : 3;
-                  final width = (constraints.maxWidth - (columns - 1) * 14) / columns;
+                  final width = (constraints.maxWidth - (columns - 1) * Space.md) / columns;
                   return Wrap(
-                    spacing: 14,
-                    runSpacing: 14,
+                    spacing: Space.md,
+                    runSpacing: Space.md,
                     children: [for (final card in cards) SizedBox(width: width, child: card)],
                   );
                 },
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: Space.md + 2),
               Card(
                 child: Padding(
-                  padding: const EdgeInsets.all(18),
+                  padding: const EdgeInsets.all(Space.md + 2),
                   child: Row(
                     children: [
-                      const Icon(Icons.outgoing_mail, color: Color(0xFF245B85)),
-                      const SizedBox(width: 12),
+                      ExcludeSemantics(child: Icon(Icons.outgoing_mail, color: colors.info)),
+                      const SizedBox(width: Space.sm),
                       Expanded(
                         child: Text(
                           'Email delivery: ${h['emails_sent']} sent, ${h['emails_failed']} failed. '
                           'Success rate reflects certificate emails only.',
-                          style: TextStyle(color: Colors.blueGrey.shade700),
+                          style: theme.textTheme.bodyMedium
+                              ?.copyWith(color: colors.textSecondary),
                         ),
                       ),
                     ],

@@ -15,6 +15,7 @@ from app.models.event_attendee import EventAttendee
 from app.models.training_event import TrainingEvent
 from app.models.user import User
 from app.schemas.common import AttendeeSearchRow, ReportColumn
+from app.services.csv_safe import csv_safe
 
 router = APIRouter(tags=["Reports"])
 
@@ -163,9 +164,13 @@ def annual_report(
 
     output = io.StringIO()
     writer = csv.writer(output)
+    # Headers are our own hardcoded labels, so they go out as-is. Every data
+    # cell is user-derived (names and companies come from public check-in and
+    # from uploaded rosters), so each one is neutralized against spreadsheet
+    # formula injection before it reaches an admin's Excel.
     writer.writerow([REPORT_COLUMNS[key][0] for key in selected])
     for link in links:
-        writer.writerow([REPORT_COLUMNS[key][1](link) for key in selected])
+        writer.writerow([csv_safe(REPORT_COLUMNS[key][1](link)) for key in selected])
 
     response = StreamingResponse(iter([output.getvalue()]), media_type="text/csv")
     response.headers["Content-Disposition"] = f'attachment; filename="ceu-annual-report-{year}.csv"'

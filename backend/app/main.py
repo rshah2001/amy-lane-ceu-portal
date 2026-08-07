@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import models  # noqa: F401
 from app.api import (
+    attendees,
     auth,
     certificates,
     checkin,
@@ -58,6 +59,7 @@ app.include_router(uploads.router, prefix="/api")
 app.include_router(compliance.router, prefix="/api")
 app.include_router(certificates.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
+app.include_router(attendees.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
 app.include_router(surveys.router, prefix="/api")
 app.include_router(tests.router, prefix="/api")

@@ -83,7 +83,11 @@ class TestRemoveOneAttendee:
             headers=admin.headers,
         )
         assert response.status_code == 200, response.text
-        assert response.json() == {"removed": 1, "kept_with_issued_certificates": []}
+        assert response.json() == {
+            "removed": 1,
+            "kept_with_issued_certificates": [],
+            "revoked": [],
+        }
         assert names(client, admin.headers, event["id"]) == [
             "Alice Nguyen",
             "Cara Fields",
@@ -170,7 +174,14 @@ class TestRemoveOneAttendee:
         client.delete(f"/api/events/{event['id']}/compliance/{link_id}", headers=admin.headers)
         assert not pdf.exists()
 
-    def test_email_logs_go_with_the_certificate(self, client, admin, event, rows, db_session):
+    def test_email_logs_survive_a_revocation(self, client, admin, event, rows, db_session):
+        """The delivery record is part of what the seven years covers.
+
+        Email logs cascade off the certificate row, so before revocation existed
+        the override deleted them too — erasing the evidence of who the wrong
+        certificate was actually sent to, which is the one fact the revocation
+        is about.
+        """
         link_id = rows["Alice Nguyen"]["id"]
         issue_certificate(client, admin.headers, event["id"], link_id, send_it=True)
         assert db_session.scalars(select(CertificateEmailLog)).all()
@@ -178,6 +189,27 @@ class TestRemoveOneAttendee:
             f"/api/events/{event['id']}/compliance/{link_id}?include_sent=true",
             headers=admin.headers,
         )
+        db_session.expire_all()
+        assert db_session.scalars(select(CertificateEmailLog)).all()
+
+    def test_undelivered_certificate_takes_its_email_logs_with_it(
+        self, client, admin, event, rows, db_session
+    ):
+        """The cascade still applies to the certificates that may be deleted."""
+        link_id = rows["Alice Nguyen"]["id"]
+        certificate_id = issue_certificate(
+            client, admin.headers, event["id"], link_id, send_it=False
+        )["id"]
+        db_session.add(
+            CertificateEmailLog(
+                certificate_id=certificate_id,
+                recipient_email="alice.nguyen@example.com",
+                status="failed",
+                error_message="SMTP timeout",
+            )
+        )
+        db_session.commit()
+        client.delete(f"/api/events/{event['id']}/compliance/{link_id}", headers=admin.headers)
         db_session.expire_all()
         assert not db_session.scalars(select(CertificateEmailLog)).all()
 
@@ -204,9 +236,13 @@ class TestRemoveOneAttendee:
             headers=admin.headers,
         )
         assert forced.status_code == 200, forced.text
-        assert forced.json()["removed"] == 1
-        assert "Alice Nguyen" not in names(client, admin.headers, event["id"])
-        # The whole point of the override: it revokes a live public credential.
+        # Revoked, not removed: the record is retained for seven years, so the
+        # override withdraws the credential instead of destroying it.
+        assert forced.json() == {
+            "removed": 0,
+            "kept_with_issued_certificates": [],
+            "revoked": ["Alice Nguyen"],
+        }
         assert not verifies_publicly(client, number)
 
     def test_downloaded_certificate_also_needs_the_override(self, client, admin, event, rows):
@@ -247,6 +283,7 @@ class TestRemoveOneAttendee:
         assert response.json() == {
             "removed": 3,
             "kept_with_issued_certificates": ["Alice Nguyen"],
+            "revoked": [],
         }
         assert verifies_publicly(client, number)
 
@@ -283,7 +320,11 @@ class TestClearRoster:
             f"/api/events/{event['id']}/compliance", headers=admin.headers
         )
         assert response.status_code == 200, response.text
-        assert response.json() == {"removed": 4, "kept_with_issued_certificates": []}
+        assert response.json() == {
+            "removed": 4,
+            "kept_with_issued_certificates": [],
+            "revoked": [],
+        }
         assert names(client, admin.headers, event["id"]) == []
 
     def test_reupload_rebuilds_the_roster_from_the_sheet_alone(
@@ -310,10 +351,20 @@ class TestClearRoster:
         assert response.json() == {
             "removed": 3,
             "kept_with_issued_certificates": ["Alice Nguyen"],
+            "revoked": [],
         }
         assert names(client, admin.headers, event["id"]) == ["Alice Nguyen"]
 
-    def test_include_sent_clears_everything(self, client, admin, event, rows):
+    def test_include_sent_revokes_rather_than_clearing_a_delivered_certificate(
+        self, client, admin, event, rows
+    ):
+        """The override empties the roster of everyone it is allowed to delete.
+
+        The one attendee holding a delivered certificate keeps a row, because
+        deleting it would take the certificate with it (the FK cascades) and
+        that record is retained for seven years. Their certificate is revoked
+        and the response says so separately from the three that were removed.
+        """
         issue_certificate(
             client, admin.headers, event["id"], rows["Alice Nguyen"]["id"], send_it=True
         )
@@ -321,8 +372,12 @@ class TestClearRoster:
             f"/api/events/{event['id']}/compliance?include_sent=true", headers=admin.headers
         )
         assert response.status_code == 200, response.text
-        assert response.json() == {"removed": 4, "kept_with_issued_certificates": []}
-        assert names(client, admin.headers, event["id"]) == []
+        assert response.json() == {
+            "removed": 3,
+            "kept_with_issued_certificates": [],
+            "revoked": ["Alice Nguyen"],
+        }
+        assert names(client, admin.headers, event["id"]) == ["Alice Nguyen"]
 
     def test_other_events_are_untouched(self, client, admin, event, rows):
         other = create_event(client, admin.headers, title="Untouched CEU")
