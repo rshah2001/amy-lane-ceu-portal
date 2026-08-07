@@ -9,6 +9,58 @@ import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
 
+/// Is this the server refusing to guess what a unit-less score column means?
+///
+/// Matched on a substring rather than a prefix on purpose. The server raises
+/// this from two places, and one of them is wrapped by a generic handler into
+/// "Unable to extract rows: The score column is ambiguous…". A prefix match
+/// silently misses that variant and the uploader gets a red banner telling
+/// them to go edit their spreadsheet — which is the whole thing this dialog
+/// exists to avoid.
+bool isAmbiguousScoreError(Object exception) =>
+    exception is ApiException &&
+    exception.statusCode == 400 &&
+    exception.message.contains('score column is ambiguous');
+
+/// The values the server reported, pulled out of its message.
+///
+/// Best-effort: an older server that doesn't list them yields an empty list and
+/// the dialog falls back to generic wording, which is a far smaller loss than a
+/// parse that throws.
+List<String> scoreSamplesFrom(String message) {
+  final match = RegExp(r'Values found: ([^.]+)').firstMatch(message);
+  if (match == null) return const [];
+  return match
+      .group(1)!
+      .split(',')
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty)
+      .toList();
+}
+
+/// What a given reading turns [sample] into, e.g. "8 becomes 80% — a pass".
+/// Empty when the sample isn't a number we can restate.
+String scoreBasisPreview(String basis, String sample) {
+  final parsed = double.tryParse(sample);
+  if (parsed == null) return '';
+  final value = switch (basis) {
+    'out_of_10' => parsed * 10,
+    'out_of_1' => parsed * 100,
+    _ => parsed,
+  };
+  final rendered = value.truncateToDouble() == value
+      ? value.toStringAsFixed(0)
+      : value.toStringAsFixed(1);
+  return '$sample becomes $rendered% — a ${value >= 80 ? 'pass' : 'fail'}';
+}
+
+/// The three readings a unit-less score column can have, in the order shown.
+const scoreBasisOptions = [
+  ('percent', 'Percentages (0–100)'),
+  ('out_of_10', 'Out of 10'),
+  ('out_of_1', 'Fractions of 1'),
+];
+
 class UploadsPage extends StatefulWidget {
   const UploadsPage({super.key, required this.session, required this.event});
   final SessionController session;
@@ -119,7 +171,7 @@ class _UploadsPageState extends State<UploadsPage> {
     } catch (exception) {
       if (!mounted) {
         // fall through to the finally block
-      } else if (_isAmbiguousScore(exception)) {
+      } else if (isAmbiguousScoreError(exception)) {
         // The one refusal the user can answer without touching the file: the
         // score column has no unit, so the server won't guess. Ask here and
         // resend the same bytes with the answer, rather than sending them back
@@ -206,111 +258,15 @@ class _UploadsPageState extends State<UploadsPage> {
     }
   }
 
-  /// Is this the server refusing to guess what a unit-less score column means?
-  bool _isAmbiguousScore(Object exception) =>
-      exception is ApiException &&
-      exception.statusCode == 400 &&
-      exception.message.startsWith('The score column is ambiguous');
-
-  /// The values the server reported, pulled out of its message.
-  ///
-  /// Best-effort: if the wording ever changes the dialog simply shows no
-  /// examples, which is a smaller loss than a parse that throws.
-  List<String> _samplesFrom(String message) {
-    final match = RegExp(r'Values found: ([^.]+)\.').firstMatch(message);
-    if (match == null) return const [];
-    return match.group(1)!.split(',').map((value) => value.trim()).where((v) => v.isNotEmpty).toList();
-  }
 
   /// Asks what the scores mean, showing the user's own values against each
   /// reading so the choice is concrete rather than a vocabulary quiz.
   ///
-  /// Returns the chosen basis, or null if they cancelled. There is deliberately
-  /// no default selection: picking one for them is the guess this whole flow
-  /// exists to avoid, and choosing wrong issues certificates for failed tests.
-  Future<String?> _askScoreBasis(String message) {
-    final samples = _samplesFrom(message);
-    final example = samples.isNotEmpty ? samples.first : '8';
-    final asPercent = double.tryParse(example);
-    String preview(String basis) {
-      if (asPercent == null) return '';
-      final value = switch (basis) {
-        'out_of_10' => asPercent * 10,
-        'out_of_1' => asPercent * 100,
-        _ => asPercent,
-      };
-      final pass = value >= 80 ? 'pass' : 'fail';
-      return '$example becomes ${value.toStringAsFixed(value.truncateToDouble() == value ? 0 : 1)}% — a $pass';
-    }
-
-    return showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        final theme = Theme.of(dialogContext);
-        final colors = theme.portal;
-        return AlertDialog(
-          icon: Icon(Icons.help_outline, color: colors.warning, size: 40),
-          title: const Text('What do these scores mean?'),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  samples.isEmpty
-                      ? 'The score column has no "%" or "x/10" on any row, so the same '
-                          'number could be a pass or a fail.'
-                      : 'Your file has scores like ${samples.join(', ')} — with no "%" or '
-                          '"x/10" anywhere, so the same number could be a pass or a fail.',
-                  style: theme.textTheme.bodyMedium,
-                ),
-                const SizedBox(height: Space.sm),
-                Text(
-                  'Pick the right one and the file will be re-read — you do not need to '
-                  'open it again.',
-                  style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
-                ),
-                const SizedBox(height: Space.md),
-                for (final option in const [
-                  ('percent', 'Percentages (0–100)'),
-                  ('out_of_10', 'Out of 10'),
-                  ('out_of_1', 'Fractions of 1'),
-                ]) ...[
-                  OutlinedButton(
-                    onPressed: () => Navigator.pop(dialogContext, option.$1),
-                    style: OutlinedButton.styleFrom(
-                      alignment: Alignment.centerLeft,
-                      minimumSize: const Size(double.infinity, minTapTarget),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(option.$2, style: theme.textTheme.titleSmall),
-                        if (preview(option.$1).isNotEmpty)
-                          Text(
-                            preview(option.$1),
-                            style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
-                          ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: Space.xs),
-                ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-          ],
-        );
-      },
-    );
-  }
+  /// Returns the chosen basis, or null if they cancelled.
+  Future<String?> _askScoreBasis(String message) => showDialog<String>(
+        context: context,
+        builder: (_) => ScoreBasisDialog(samples: scoreSamplesFrom(message)),
+      );
 
   /// Is this the backend's "nothing could be imported" refusal?
   ///
@@ -677,6 +633,81 @@ class _UploadRow extends StatelessWidget {
           },
         ),
       ),
+    );
+  }
+}
+
+/// Asks what a unit-less score column means, in the portal rather than in Excel.
+///
+/// Deliberately has no default selection: pre-selecting a reading is exactly
+/// the guess the server refused to make, and picking wrong issues certificates
+/// for failed tests. The uploader has to say.
+class ScoreBasisDialog extends StatelessWidget {
+  const ScoreBasisDialog({super.key, required this.samples});
+
+  /// Values from the user's own file, so the question is about their data.
+  /// Empty when the server didn't report any — the copy adapts.
+  final List<String> samples;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
+    final example = samples.isNotEmpty ? samples.first : '';
+    return AlertDialog(
+      icon: Icon(Icons.help_outline, color: colors.warning, size: 40),
+      title: const Text('What do these scores mean?'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                samples.isEmpty
+                    ? 'The score column has no "%" or "x/10" on any row, so the same '
+                        'number could be a pass or a fail.'
+                    : 'Your file has scores like ${samples.join(', ')} — with no "%" or '
+                        '"x/10" anywhere, so the same number could be a pass or a fail.',
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: Space.sm),
+              Text(
+                'Pick the right one and the file will be re-read — you do not need to '
+                'open it again.',
+                style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
+              ),
+              const SizedBox(height: Space.md),
+              for (final option in scoreBasisOptions) ...[
+                OutlinedButton(
+                  onPressed: () => Navigator.pop(context, option.$1),
+                  style: OutlinedButton.styleFrom(
+                    alignment: Alignment.centerLeft,
+                    minimumSize: const Size(double.infinity, minTapTarget),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(option.$2, style: theme.textTheme.titleSmall),
+                      if (example.isNotEmpty && scoreBasisPreview(option.$1, example).isNotEmpty)
+                        Text(
+                          scoreBasisPreview(option.$1, example),
+                          style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: Space.xs),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+      ],
     );
   }
 }
