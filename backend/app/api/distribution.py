@@ -14,6 +14,7 @@ from app.models.user import User
 from app.services.audit import record_audit
 from app.services.emailer import send_invite_email
 from app.services.identity import is_valid_email
+from app.services.invites import ensure_invite_nonce
 
 router = APIRouter(prefix="/events/{event_id}/distribute", tags=["Distribution"])
 
@@ -82,7 +83,16 @@ def distribute(
             outcome.reason = NO_EMAIL_REASON
         else:
             try:
-                send_invite_email(event, link.attendee.full_name, email)
+                # Minted before the send, and kept even if the send fails: the
+                # nonce is stable per attendee, so a retry -- or a second
+                # distribution run months later -- reissues the same link
+                # rather than invalidating the email they already have.
+                send_invite_email(
+                    event,
+                    link.attendee.full_name,
+                    email,
+                    invite_nonce=ensure_invite_nonce(link),
+                )
                 link.invite_sent_at = datetime.now(timezone.utc)
             except Exception as exc:  # noqa: BLE001 - report any delivery failure per attendee
                 outcome.status = "failed"

@@ -150,7 +150,12 @@ def make_user(
         email=user.email,
         role=user.role,
         full_name=user.full_name,
-        headers={"Authorization": f"Bearer {create_access_token(str(user.id), user.role)}"},
+        headers={
+            # Minted with the user's real token_version, the way /auth/login
+            # does it, so a fixture-issued session behaves like a signed-in one
+            # and is evicted by a password change just the same.
+            "Authorization": f"Bearer {create_access_token(str(user.id), user.role, user.token_version)}"
+        },
     )
 
 

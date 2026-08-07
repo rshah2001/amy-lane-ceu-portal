@@ -170,13 +170,33 @@ def send_simple_email(recipient: str, subject: str, body: str) -> str:
     return _deliver(recipient, subject, body)
 
 
-def _public_link(token_param: str, token: str, name: str, email: str) -> str:
-    query = urlencode({token_param: token, "name": name, "email": email})
-    return f"{settings.public_frontend_url}/?{query}"
+def _public_link(
+    token_param: str, token: str, name: str, email: str, nonce: str | None = None
+) -> str:
+    params = {token_param: token, "name": name, "email": email}
+    if nonce:
+        # The one part of this URL that is not guessable from the roster: it is
+        # what lets the survey endpoint tell "the attendee we emailed" apart
+        # from "somebody who knows their address". See app.services.invites.
+        params["k"] = nonce
+    return f"{settings.public_frontend_url}/?{urlencode(params)}"
 
 
-def send_invite_email(event: TrainingEvent, attendee_name: str, recipient: str) -> str:
-    """Email an attendee their personalized post-test and/or survey links."""
+def send_invite_email(
+    event: TrainingEvent,
+    attendee_name: str,
+    recipient: str,
+    *,
+    invite_nonce: str | None = None,
+) -> str:
+    """Email an attendee their personalized post-test and/or survey links.
+
+    ``invite_nonce`` is this attendee's invite secret; when given it rides
+    along on the survey link so their submission can be credited to them
+    without them having to retype the address we already hold. Optional, so
+    that a caller with no roster row (there is none today) still sends a
+    working, if unprivileged, email.
+    """
     actions: list[tuple[str, str]] = []
     # An internal test link is only worth sending once the test actually has
     # questions -- the same guard the check-in next-steps and the QR slide links
@@ -187,7 +207,14 @@ def send_invite_email(event: TrainingEvent, attendee_name: str, recipient: str) 
     elif event.test_mode == "external" and event.post_test_url:
         actions.append(("Complete your post-test", event.post_test_url))
     if event.survey_mode == "internal" and event.survey_token:
-        actions.append(("Complete the feedback survey", _public_link("survey", event.survey_token, attendee_name, recipient)))
+        actions.append(
+            (
+                "Complete the feedback survey",
+                _public_link(
+                    "survey", event.survey_token, attendee_name, recipient, invite_nonce
+                ),
+            )
+        )
     elif event.survey_mode == "external" and event.external_survey_url:
         actions.append(("Complete the feedback survey", event.external_survey_url))
 

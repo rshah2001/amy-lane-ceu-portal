@@ -79,6 +79,27 @@ class MessageOut(BaseModel):
     detail: str
 
 
+class PasswordChangedOut(MessageOut):
+    """What ``/auth/change-password`` answers: the acknowledgement, plus a
+    replacement session.
+
+    Changing a password invalidates every token issued under the old one --
+    that is the entire point -- and the caller is holding one of them. Without
+    a replacement, the one user guaranteed to be signed out by a password
+    change is the person who chose to make it, which teaches people not to.
+    So the route mints a token under the new version and hands it back.
+
+    Deliberately a superset of ``MessageOut`` rather than a swap to
+    ``TokenResponse``: a client that only reads ``detail`` still parses this
+    response unchanged, and one that stores ``access_token`` keeps its session.
+    A client that ignores the new token is not left insecure, only signed out.
+    """
+
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
 class PasswordResetLinkOut(BaseModel):
     """What an admin gets back after starting a reset for someone else.
 

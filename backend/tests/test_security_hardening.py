@@ -348,7 +348,7 @@ class TestPublicVerificationHardening:
 class TestMalformedTokenSubject:
     @pytest.mark.parametrize("subject", ["not-a-number", "", "1; DROP TABLE users"])
     def test_non_numeric_subject_is_401_not_500(self, client, subject):
-        token = create_access_token(subject, "admin")
+        token = create_access_token(subject, "admin", 1)
         response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 401, response.text
 

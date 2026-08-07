@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -30,6 +30,7 @@ from app.services.audit import record_audit
 from app.services.csv_safe import csv_safe
 from app.services.compliance import recalculate_event
 from app.services.identity import normalize_email
+from app.services.invites import NONCE_MAX_LENGTH, link_for_nonce
 from app.services.survey_ai import summarize_survey_answers
 
 router = APIRouter(tags=["Surveys"])
@@ -77,7 +78,9 @@ def _unanswered_required(event: TrainingEvent, answered: dict[str, str]) -> list
     ]
 
 
-def _completion_basis(attendee: Attendee, submitted_email: str | None) -> str | None:
+def _completion_basis(
+    attendee: Attendee, submitted_email: str | None, *, via_invite: bool = False
+) -> str | None:
     """Why (or why not) a public submission may credit this attendee's survey.
 
     The survey link is a shared secret printed on a slide: anyone holding it can
@@ -86,19 +89,29 @@ def _completion_basis(attendee: Attendee, submitted_email: str | None) -> str | 
     that names an attendee who already carries an identity -- without carrying
     that identity itself -- records the response but leaves the flag alone.
 
-    The two accepted bases, and why they are the ones matching can vouch for:
+    The three accepted bases, strongest first, and what each one is worth:
 
+    - ``invite_nonce``: the submission carried the secret from this attendee's
+      own invite email (``?k=``), which nothing on the roster and no colleague
+      who knows their address can produce. This is the only basis that is proof
+      rather than plausibility, and it is the one the identity came *from* --
+      the caller resolves the attendee by nonce, not by the form's name field.
     - ``email_on_submission``: the submission carried an address, so
       ``match_or_create_attendee`` either resolved this attendee *by* that
       address (the submitter knew what is on the record) or resolved a record
       that had no address at all -- an email-bearing submission is only ever
-      name-matched into an email-less row. Nothing else can be reached.
+      name-matched into an email-less row. Nothing else can be reached. Weaker
+      than the nonce, and knowingly so: a registered address is not a secret.
+      It survives because the QR sheet is a core feature and it is the only
+      thing a walk-in with a printed link can offer.
     - ``no_email_on_record``: a name-only submission naming an attendee with no
       address on file. There is no identity to prove, and the survey flag alone
       hands nothing out: eligibility also requires a valid email.
 
     Returns the basis for crediting, or ``None`` when the submission may not.
     """
+    if via_invite:
+        return "invite_nonce"
     if submitted_email and normalize_email(submitted_email):
         return "email_on_submission"
     if not attendee.normalized_email:
@@ -129,6 +142,14 @@ def submit_public_survey(
     token: str,
     payload: PublicSurveySubmission,
     request: Request,
+    k: str | None = Query(
+        default=None,
+        max_length=NONCE_MAX_LENGTH,
+        description=(
+            "Invite nonce from this attendee's own invitation email. Present on "
+            "emailed links only; the shared QR link has none and does not need one."
+        ),
+    ),
     db: Session = Depends(get_db),
     _rate_limit: None = Depends(PublicRateLimit("survey", "token")),
 ) -> dict:
@@ -179,12 +200,26 @@ def submit_public_survey(
             status_code=422,
             detail=f"Please answer the required question(s): {', '.join(missing[:5])}",
         )
+    # A nonce, when the link came from this attendee's own invite email. An
+    # unrecognised one is treated as absent rather than refused: the fallback
+    # credits nothing it would not have credited before, and rejecting would
+    # throw away real feedback over a link an email client mangled. Whether one
+    # was offered, and whether it resolved, is audited below.
+    invited_link = link_for_nonce(db, event.id, k)
     # Name and email are both optional: with neither, the response is stored
     # anonymously (no attendee linked); with either one, we match/create an
     # attendee from whatever identity was given, as before.
     submitted_email = str(payload.email) if payload.email else None
     attendee = None
-    if payload.full_name or payload.email:
+    if invited_link is not None:
+        # The nonce *is* the identity, so the form's name and email are not
+        # consulted for matching at all. Two reasons: a link only its owner
+        # received should not need them retyped correctly, and letting a
+        # nonce-bearing submission also match/create some other attendee would
+        # scatter duplicate roster rows every time someone typed a nickname.
+        # What was typed is still recorded in the audit entry.
+        attendee = invited_link.attendee
+    elif payload.full_name or payload.email:
         attendee = match_or_create_attendee(
             db,
             event.id,
@@ -203,12 +238,16 @@ def submit_public_survey(
     result.completed = True
     result.completed_at = datetime.now(timezone.utc)
     result.raw_payload = payload.answers
-    basis = _completion_basis(attendee, submitted_email) if attendee else None
+    basis = (
+        _completion_basis(attendee, submitted_email, via_invite=invited_link is not None)
+        if attendee
+        else None
+    )
     # A submission that named someone else's record: kept, linked, but not
     # allowed to move their compliance state (see _completion_basis).
     refused = attendee is not None and basis is None
     if attendee:
-        link = get_or_create_link(db, event.id, attendee.id)
+        link = invited_link or get_or_create_link(db, event.id, attendee.id)
         if basis:
             link.survey_completed = True
     db.flush()
@@ -233,6 +272,12 @@ def submit_public_survey(
             "answered": len(answered),
             "survey_completed": bool(basis),
             "completion_basis": basis,
+            # Both flags, not just the basis: a nonce that was offered and did
+            # not resolve is the fingerprint of a stale or tampered link, and it
+            # is invisible in `completion_basis` alone because the submission
+            # quietly falls back to the older rules.
+            "invite_nonce_presented": k is not None,
+            "invite_nonce_valid": invited_link is not None,
         },
     )
     if refused:
@@ -252,6 +297,11 @@ def submit_public_survey(
                 "client_ip": caller,
                 "submitted_name": payload.full_name,
                 "submitted_email": submitted_email,
+                # This entry is meant to be readable on its own, so it repeats
+                # the nonce flags: a refusal that *did* carry a nonce means the
+                # nonce did not resolve, which is what a stale or edited link
+                # looks like -- a different thing from no nonce at all.
+                "invite_nonce_presented": k is not None,
             },
         )
     db.commit()

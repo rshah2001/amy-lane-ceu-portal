@@ -14,6 +14,7 @@ from app.schemas.common import (
     ForgotPasswordRequest,
     LoginRequest,
     MessageOut,
+    PasswordChangedOut,
     ResetPasswordRequest,
     TokenResponse,
     UserOut,
@@ -74,7 +75,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     record_audit(db, "user.login", "user", user.id, user)
     db.commit()
     return TokenResponse(
-        access_token=create_access_token(str(user.id), user.role),
+        access_token=create_access_token(str(user.id), user.role, user.token_version),
         user=UserOut.model_validate(user),
     )
 
@@ -84,18 +85,24 @@ def me(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
-@router.post("/change-password", response_model=MessageOut)
+@router.post("/change-password", response_model=PasswordChangedOut)
 def change_password(
     payload: ChangePasswordRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> MessageOut:
+) -> PasswordChangedOut:
     """Change your own password, proving you know the current one.
 
     The current password is required even though the caller already holds a
     valid session: a session is something that can be left open on a shared
     laptop, and without this check that is enough to lock the account's owner
     out of it permanently.
+
+    Succeeding ends every *other* session on the account (see
+    ``set_password``), and hands this one a replacement token so the person who
+    made the change is not the only one signed out by it. That is safe to do
+    here and nowhere else: the current password was just proved one line below,
+    so this caller is the account's owner and not the session being evicted.
     """
     if not verify_password(payload.current_password, current_user.hashed_password):
         # Audited, because a run of these against one account is worth seeing
@@ -119,7 +126,16 @@ def change_password(
         db, "user.password_changed", "user", current_user.id, current_user, details={"method": "self_service"}
     )
     db.commit()
-    return MessageOut(detail="Your password has been changed.")
+    # Minted after the commit, so the version it carries is the one now stored:
+    # a token minted from an uncommitted bump would be refused if the commit
+    # failed, handing the caller a session that never worked.
+    return PasswordChangedOut(
+        detail="Your password has been changed. Any other devices signed in to this account have been signed out.",
+        access_token=create_access_token(
+            str(current_user.id), current_user.role, current_user.token_version
+        ),
+        user=UserOut.model_validate(current_user),
+    )
 
 
 @router.post("/forgot-password", response_model=MessageOut, status_code=status.HTTP_202_ACCEPTED)

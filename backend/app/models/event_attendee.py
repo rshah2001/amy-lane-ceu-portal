@@ -29,6 +29,13 @@ class EventAttendee(TimestampMixin, Base):
     eligibility_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
     compliance_status: Mapped[str] = mapped_column(String(50), default="pending", index=True)
     invite_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Secret embedded in this attendee's own invite email, so a public survey
+    # submission can prove it came from that email rather than from anyone who
+    # knows the address. Minted on first send and never rotated -- an invite
+    # already sitting in an inbox has to keep working. Never serialized to any
+    # API response: it is a per-person secret, not roster data. See
+    # app.services.invites.
+    invite_nonce: Mapped[str | None] = mapped_column(String(120), unique=True, index=True)
     # Set when the attendee self-checked-in via the public QR link; attendance
     # file re-imports must never clear attendance recorded this way.
     checked_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

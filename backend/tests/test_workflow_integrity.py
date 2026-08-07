@@ -461,7 +461,7 @@ class TestDistributionReport:
     def test_a_delivery_failure_carries_its_reason_and_is_retryable(
         self, client, admin, event, monkeypatch
     ):
-        def explode(_event, name, recipient):
+        def explode(_event, name, recipient, **_kwargs):
             if name == "Bob Ramos":
                 raise RuntimeError("SMTP 550 mailbox unavailable")
             return "ok"
@@ -480,7 +480,7 @@ class TestDistributionReport:
     def test_failures_reach_the_audit_log_with_their_reasons(
         self, client, admin, event, db_session, monkeypatch
     ):
-        def explode(_event, _name, _recipient):
+        def explode(_event, _name, _recipient, **_kwargs):
             raise RuntimeError("SMTP 550 mailbox unavailable")
 
         monkeypatch.setattr("app.api.distribution.send_invite_email", explode)

@@ -132,6 +132,26 @@ def set_password(user: User, new_password: str) -> None:
 
     Always clears any outstanding reset token: once the account has a password
     its owner knows, a reset link still sitting in an inbox is a spare key.
+
+    Always bumps ``token_version``, which is what makes the change end sessions
+    that are already open. Every access token carries the version it was minted
+    under and ``app.api.deps`` refuses any that no longer matches, so the
+    moment this runs, every previously issued token for this account is dead --
+    including the one held by whoever the reset was hurried for. It lives here,
+    and not in the three routes that set passwords, so a fourth route cannot
+    forget it: ``/auth/change-password``, ``/auth/reset-password`` and
+    ``PATCH /users/{id}`` all come through this function.
+
+    (``POST /users/{id}/reset-password`` sets no password -- it only mints a
+    link -- so it deliberately does not bump: an admin starting a reset must
+    not sign the user out of a session they may still be using to read the
+    email. The bump lands when the link is actually redeemed.)
+
+    Not called for a brand-new user in ``POST /users``: that account has no
+    tokens to invalidate, and starts at version 1 from the column default.
     """
     user.hashed_password = get_password_hash(new_password)
     clear_reset_token(user)
+    # `or 0` covers a User object that has not been flushed yet, where the
+    # column default has not been applied and the attribute is still None.
+    user.token_version = (user.token_version or 0) + 1
