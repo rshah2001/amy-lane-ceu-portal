@@ -107,6 +107,32 @@ class SessionController extends ChangeNotifier {
     }
   }
 
+  /// Replaces the stored credentials from a response that minted a new token.
+  ///
+  /// Changing a password invalidates every token issued before it, including
+  /// the one this session is holding. `/auth/change-password` returns a
+  /// replacement precisely so the person doing the right thing isn't signed
+  /// out for it; without adopting it here the next request 401s and they land
+  /// on the login screen a second after succeeding.
+  ///
+  /// Tolerates a response without a token — the endpoint adds it alongside the
+  /// existing fields rather than changing shape, so an older server simply
+  /// leaves the session as it was and the user is signed out on the next
+  /// request. Fail-safe, never fail-open.
+  Future<void> adoptToken(Map<String, dynamic> response) async {
+    final token = response['access_token'] as String?;
+    if (token == null || token.isEmpty) return;
+    api.token = token;
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString('access_token', token);
+    final refreshed = response['user'];
+    if (refreshed is Map<String, dynamic>) {
+      user = PortalUser.fromJson(refreshed);
+      await preferences.setString('user', jsonEncode(refreshed));
+    }
+    notifyListeners();
+  }
+
   Future<void> logout() async {
     api.token = null;
     user = null;

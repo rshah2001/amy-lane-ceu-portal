@@ -101,6 +101,9 @@ class _CeuPortalAppState extends State<CeuPortalApp> {
                 ? PublicSurveyPage(
                     api: widget.session.api,
                     token: surveyToken,
+                    // Per-attendee secret from an emailed invite. Absent on the
+                    // printed QR sheet, which is one shared link for the room.
+                    inviteNonce: params['k'],
                     prefillName: params['name'],
                     prefillEmail: params['email'],
                   )

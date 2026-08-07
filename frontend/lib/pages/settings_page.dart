@@ -61,6 +61,16 @@ class _SettingsPageState extends State<SettingsPage> {
                     const ListTile(title: SectionTitle('Account')),
                     divider,
                     ListTile(leading: const Icon(Icons.person_outline), title: Text(user['full_name'] as String), subtitle: Text(user['email'] as String), trailing: StatusBadge((user['role'] as String).toUpperCase(), tone: BadgeTone.info)),
+                    divider,
+                    ListTile(
+                      leading: const Icon(Icons.key_outlined),
+                      title: const Text('Password'),
+                      subtitle: const Text('Change the password you sign in with'),
+                      trailing: OutlinedButton(
+                        onPressed: () => _showChangePassword(context, widget.session),
+                        child: const Text('Change'),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -294,3 +304,144 @@ class _SettingRow extends StatelessWidget {
   }
 }
 
+
+/// Change-your-own-password dialog.
+///
+/// Separate from the admin's "set someone's password" control in Users: this
+/// one proves the current password first, which is what lets the server hand
+/// back a fresh token instead of signing the caller out of the session they
+/// are standing in.
+Future<void> _showChangePassword(BuildContext context, SessionController session) async {
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) => _ChangePasswordDialog(session: session),
+  );
+}
+
+class _ChangePasswordDialog extends StatefulWidget {
+  const _ChangePasswordDialog({required this.session});
+  final SessionController session;
+
+  @override
+  State<_ChangePasswordDialog> createState() => _ChangePasswordDialogState();
+}
+
+class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
+  final formKey = GlobalKey<FormState>();
+  final current = TextEditingController();
+  final next = TextEditingController();
+  final confirm = TextEditingController();
+  final currentField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'current password'),
+  );
+  final nextField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'new password'),
+  );
+  bool saving = false;
+  String? error;
+
+  @override
+  void dispose() {
+    current.dispose();
+    next.dispose();
+    confirm.dispose();
+    currentField.focus.dispose();
+    nextField.focus.dispose();
+    super.dispose();
+  }
+
+  Future<void> submit() async {
+    if (!validateAndFocusFirstError(context, formKey, [currentField, nextField])) return;
+    setState(() {
+      saving = true;
+      error = null;
+    });
+    try {
+      final result = await widget.session.api.post('/auth/change-password', {
+        'current_password': current.text,
+        'new_password': next.text,
+      }) as Map<String, dynamic>;
+      // Changing a password invalidates every token issued before it,
+      // including the one this session is holding. The server returns a
+      // replacement precisely so the person doing the right thing isn't
+      // logged out for it — dropping it on the floor would leave them staring
+      // at the sign-in screen a second after succeeding.
+      await widget.session.adoptToken(result);
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Password changed. Other devices have been signed out.')),
+        );
+      }
+    } catch (exception) {
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Change password'),
+      content: Form(
+        key: formKey,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                key: currentField.key,
+                focusNode: currentField.focus,
+                controller: current,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Current password'),
+                validator: (v) => (v == null || v.isEmpty) ? 'Enter your current password' : null,
+              ),
+              const SizedBox(height: Space.md),
+              TextFormField(
+                key: nextField.key,
+                focusNode: nextField.focus,
+                controller: next,
+                obscureText: true,
+                autofillHints: const [AutofillHints.newPassword],
+                decoration: const InputDecoration(labelText: 'New password'),
+                // Mirrors the server's bounds so a too-short password is
+                // caught here rather than as a 422.
+                validator: (v) => (v ?? '').length < 8 ? 'Use at least 8 characters' : null,
+              ),
+              const SizedBox(height: Space.md),
+              TextFormField(
+                controller: confirm,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Confirm new password'),
+                onFieldSubmitted: (_) => submit(),
+                validator: (v) => v == next.text ? null : 'The two passwords do not match',
+              ),
+              if (error != null) ...[
+                const SizedBox(height: Space.md),
+                FormErrorText(error!),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: saving ? null : () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        ElevatedButton(
+          onPressed: saving ? null : submit,
+          child: saving
+              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('Change password'),
+        ),
+      ],
+    );
+  }
+}

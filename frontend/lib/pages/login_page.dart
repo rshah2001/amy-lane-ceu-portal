@@ -19,6 +19,9 @@ class _LoginPageState extends State<LoginPage> {
     key: GlobalKey<FormFieldState<String>>(),
     focus: FocusNode(debugLabel: 'email address'),
   );
+  bool sendingReset = false;
+  String? resetNotice;
+
   final passwordField = (
     key: GlobalKey<FormFieldState<String>>(),
     focus: FocusNode(debugLabel: 'password'),
@@ -62,6 +65,41 @@ class _LoginPageState extends State<LoginPage> {
     if (widget.session.loading) return;
     if (!validateAndFocusFirstError(context, formKey, [emailField, passwordField])) return;
     await widget.session.login(email.text, password.text);
+  }
+
+  /// Asks for a reset link for whatever is in the email box.
+  ///
+  /// The server answers identically whether or not the address has an account,
+  /// so this deliberately reports success either way — saying "no such user"
+  /// would turn the login screen into a free test of which addresses have
+  /// portal accounts.
+  Future<void> requestReset() async {
+    final address = email.text.trim();
+    if (address.isEmpty || !address.contains('@')) {
+      setState(() => resetNotice = 'Enter your email address above first, then press this again.');
+      emailField.focus.requestFocus();
+      announceToScreenReader(context, resetNotice!);
+      return;
+    }
+    setState(() {
+      sendingReset = true;
+      resetNotice = null;
+    });
+    try {
+      final result = await widget.session.api.post('/auth/forgot-password', {'email': address});
+      final detail = (result as Map?)?['detail'] as String?;
+      if (mounted) {
+        setState(() => resetNotice = detail ?? 'If that address has an account, a reset link is on its way.');
+        announceToScreenReader(context, resetNotice!);
+      }
+    } catch (exception) {
+      if (mounted) {
+        setState(() => resetNotice = humanizeError(exception));
+        announceToScreenReader(context, resetNotice!);
+      }
+    } finally {
+      if (mounted) setState(() => sendingReset = false);
+    }
   }
 
   @override
@@ -191,14 +229,29 @@ class _LoginPageState extends State<LoginPage> {
                                 : const Text('Sign in'),
                           ),
                           const SizedBox(height: Space.md + 2),
-                          Text(
-                            'Forgot your password? Contact your NMEDA administrator.',
-                            textAlign: TextAlign.center,
-                            // Was blueGrey.shade500 at 4.37:1 on white — 13px
-                            // body text that missed AA. textSecondary is 6.39:1.
-                            style: theme.textTheme.bodySmall
-                                ?.copyWith(color: colors.textSecondary),
+                          // Was "Contact your NMEDA administrator" — an
+                          // instruction with no name, no address, and pointing
+                          // at somebody who had no control that helped. A
+                          // presenter signs in about twice a year; this is the
+                          // screen where they discover they've forgotten.
+                          Center(
+                            child: TextButton(
+                              onPressed: sendingReset ? null : requestReset,
+                              child: Text(sendingReset ? 'Sending…' : 'Forgot your password?'),
+                            ),
                           ),
+                          if (resetNotice != null) ...[
+                            const SizedBox(height: Space.xs),
+                            Semantics(
+                              liveRegion: true,
+                              child: Text(
+                                resetNotice!,
+                                textAlign: TextAlign.center,
+                                style: theme.textTheme.bodySmall
+                                    ?.copyWith(color: colors.textSecondary),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),

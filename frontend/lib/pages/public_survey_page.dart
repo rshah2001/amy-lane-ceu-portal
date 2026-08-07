@@ -9,11 +9,21 @@ class PublicSurveyPage extends StatefulWidget {
     super.key,
     required this.api,
     required this.token,
+    this.inviteNonce,
     this.prefillName,
     this.prefillEmail,
   });
   final ApiClient api;
   final String token;
+
+  /// Per-attendee secret from the `k` parameter of an emailed invite link.
+  ///
+  /// When present the server credits the attendee it was minted for and skips
+  /// name matching entirely, so a nickname typed into the form can't create a
+  /// duplicate roster row. Absent for the printed QR sheet, which is one
+  /// shared link for the whole room — that path still works, it just falls
+  /// back to matching on the address supplied.
+  final String? inviteNonce;
   final String? prefillName;
   final String? prefillEmail;
 
@@ -100,6 +110,15 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
     }
   }
 
+  /// `?k=<nonce>` when this page was opened from an emailed invite, else empty.
+  /// Encoded rather than interpolated raw, so a mangled link comes back as a
+  /// clean 422 from the server's length bound instead of a malformed URL.
+  String get _nonceQuery {
+    final nonce = widget.inviteNonce;
+    if (nonce == null || nonce.isEmpty) return '';
+    return '?k=${Uri.encodeQueryComponent(nonce)}';
+  }
+
   Future<void> submit() async {
     if (!validateAndFocusFirstError(context, formKey, [nameField, emailField])) return;
     // Questions are optional — only send what was actually written, but ask
@@ -123,7 +142,7 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
     try {
       // Identity fields are optional (anonymous feedback is allowed); blanks
       // are sent as null so nothing empty is stored.
-      await widget.api.post('/public/surveys/${widget.token}', {
+      await widget.api.post('/public/surveys/${widget.token}${_nonceQuery}', {
         'business_location': businessLocation.text.trim().isEmpty ? null : businessLocation.text.trim(),
         'full_name': name.text.trim().isEmpty ? null : name.text.trim(),
         'email': email.text.trim().isEmpty ? null : email.text.trim(),
