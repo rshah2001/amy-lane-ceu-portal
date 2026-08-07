@@ -254,7 +254,10 @@ void main() {
           'reports/columns': const <Map<String, dynamic>>[],
         },
       );
-      expect(find.text('system'), findsOneWidget);
+      // Capitalised now that the column reads as a name ("Who") rather than a
+      // raw actor id, and still rendered even though this mock serves no
+      // /users or /events — those lookups are enrichment, not a dependency.
+      expect(find.text('System'), findsOneWidget);
     });
   });
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -42,26 +44,18 @@ class _AuditReportsPageState extends State<AuditReportsPage> with LatestRequest 
         widget.session.api.get('/audit-logs?limit=300'),
         widget.session.api.get('/survey-insights'),
         widget.session.api.get('/reports/columns'),
-        // Names for the actor and event ids the log stores. This page is
-        // admin-only, so both are already readable to whoever is here; the log
-        // just doesn't carry them. Without this the audit trail — the artifact
-        // an external reviewer actually reads — says "Actor ID 7".
-        widget.session.api.get('/users'),
-        widget.session.api.get('/events'),
       ]);
+      // Names for the actor and event ids the log stores are an enrichment,
+      // never a dependency: the log has to render even if these fail, because
+      // an audit trail that won't display because an unrelated endpoint is
+      // down is worse than one showing bare ids. Loaded separately from the
+      // Future.wait above so a failure here cannot take the page with it.
+      unawaited(_loadLabels(request));
       if (request.isCurrent) {
         setState(() {
           logs = (results[0] as List).cast<Map<String, dynamic>>();
           insights = results[1] as Map<String, dynamic>;
           columns = (results[2] as List).cast<Map<String, dynamic>>();
-          actorNames = {
-            for (final user in (results[3] as List).cast<Map<String, dynamic>>())
-              user['id'] as int: (user['full_name'] as String?) ?? user['email'] as String,
-          };
-          eventTitles = {
-            for (final event in (results[4] as List).cast<Map<String, dynamic>>())
-              event['id'] as int: event['title'] as String,
-          };
           if (selectedColumns.isEmpty) {
             selectedColumns.addAll(columns.map((c) => c['key'] as String));
           }
@@ -70,6 +64,31 @@ class _AuditReportsPageState extends State<AuditReportsPage> with LatestRequest 
       }
     } catch (exception) {
       if (request.isCurrent) _fail(exception);
+    }
+  }
+
+  /// Best-effort id-to-name lookups for the log table. Silent on failure by
+  /// design: the columns fall back to "Event #12" / "User #7", which is what
+  /// the page showed before and still identifies the row.
+  Future<void> _loadLabels(RequestToken request) async {
+    try {
+      final results = await Future.wait([
+        widget.session.api.get('/users'),
+        widget.session.api.get('/events'),
+      ]);
+      if (!request.isCurrent) return;
+      setState(() {
+        actorNames = {
+          for (final user in (results[0] as List).cast<Map<String, dynamic>>())
+            user['id'] as int: (user['full_name'] as String?) ?? user['email'] as String,
+        };
+        eventTitles = {
+          for (final event in (results[1] as List).cast<Map<String, dynamic>>())
+            event['id'] as int: event['title'] as String,
+        };
+      });
+    } catch (_) {
+      // Deliberately swallowed — see the doc comment.
     }
   }
 
