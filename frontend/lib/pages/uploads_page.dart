@@ -1,6 +1,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../core/api_client.dart';
 import '../core/file_download.dart';
 import '../core/session.dart';
 import '../models/models.dart';
@@ -99,7 +100,19 @@ class _UploadsPageState extends State<UploadsPage> {
       await load();
       if (mounted) _showUploadFeedback(type, response);
     } catch (exception) {
-      if (mounted) _fail(exception);
+      if (!mounted) {
+        // fall through to the finally block
+      } else if (_isNothingImported(exception)) {
+        // A file the parser could make nothing of is now a 400 rather than a
+        // 201-with-a-notice, because an import that lands no rows must not be
+        // allowed to wipe the results already on the event. For a presenter
+        // that is still the same situation as before — their sheet needs
+        // another go — so it keeps the dialog that explains what to do, not
+        // the generic red banner a 400 would otherwise land in.
+        _showNothingImportedDialog((exception as ApiException).message);
+      } else {
+        _fail(exception);
+      }
     } finally {
       if (mounted) setState(() => uploadingType = null);
     }
@@ -165,6 +178,43 @@ class _UploadsPageState extends State<UploadsPage> {
             : SnackBarAction(label: 'View details', onPressed: () => _showParseErrors(parseErrors)),
       ));
     }
+  }
+
+  /// Is this the backend's "nothing could be imported" refusal?
+  ///
+  /// Matched on the two server messages rather than on the bare 400, so a
+  /// genuinely different bad request (an unsupported file type, an oversized
+  /// file) still surfaces as an error instead of being dressed up as a
+  /// routine "try again" dialog.
+  bool _isNothingImported(Object exception) {
+    if (exception is! ApiException || exception.statusCode != 400) return false;
+    final message = exception.message;
+    return message.startsWith('No attendee names could be read') ||
+        message.startsWith('No rows from this file could be imported');
+  }
+
+  /// The upload landed nothing, so the event was left untouched. Both roles get
+  /// told plainly that nothing changed — the reassurance matters most to a
+  /// presenter re-uploading a photographed sign-in sheet, who would otherwise
+  /// wonder whether they had just destroyed the roster.
+  void _showNothingImportedDialog(String message) {
+    final colors = Theme.of(context).portal;
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: Icon(Icons.warning_amber_outlined, color: colors.warning, size: 42),
+        title: const Text('Nothing was imported'),
+        content: Text(
+          '$message\n\nNothing already recorded for this event was changed.',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Lists every row the parser could not read, so "N row errors" is

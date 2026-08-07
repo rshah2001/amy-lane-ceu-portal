@@ -150,11 +150,23 @@ class EventDetailPage extends StatelessWidget {
     messenger.showSnackBar(const SnackBar(content: Text('Sending post-test and survey links to registered attendees...')));
     try {
       final result = await session.api.post('/events/${event.id}/distribute') as Map<String, dynamic>;
-      final skipped = (result['skipped'] as List).length;
-      final failed = (result['failed'] as List).length;
-      messenger.showSnackBar(SnackBar(
-        content: Text('Sent ${result['sent']} invite(s). Skipped $skipped (no valid email), $failed failed.'),
-      ));
+      if (!context.mounted) return;
+      final outcomes = [
+        for (final entry in (result['recipients'] as List? ?? const []).cast<Map<String, dynamic>>())
+          (
+            name: (entry['full_name'] as String?) ?? 'Unknown attendee',
+            email: entry['email'] as String?,
+            status: (entry['status'] as String?) ?? 'failed',
+            reason: entry['reason'] as String?,
+            retryable: (entry['retryable'] as bool?) ?? false,
+          ),
+      ];
+      await showBulkResultDialog(
+        context,
+        title: 'Invitations sent',
+        sent: (result['sent'] as num?)?.toInt() ?? 0,
+        outcomes: outcomes,
+      );
     } catch (exception) {
       messenger.showSnackBar(SnackBar(content: Text('Distribution failed. ${humanizeError(exception)}')));
     }

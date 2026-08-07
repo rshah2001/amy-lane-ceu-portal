@@ -674,3 +674,125 @@ class ActionMenu extends StatelessWidget {
     );
   }
 }
+
+/// One recipient's outcome from a bulk operation (invites, certificate email).
+///
+/// Mirrors the backend's per-recipient distribution report. `retryable`
+/// separates a delivery failure — worth pressing Retry — from a missing email
+/// address, which needs the roster corrected first, so the dialog can tell the
+/// admin which of the two problems they actually have.
+typedef BulkOutcome = ({
+  String name,
+  String? email,
+  String status,
+  String? reason,
+  bool retryable,
+});
+
+/// Shows the itemized result of a bulk operation and returns the recipients the
+/// admin asked to retry, or null if they didn't.
+///
+/// Replaces the snackbar this used to be. "3 failed" that disappears after four
+/// seconds, with no names and no way to act, is indistinguishable from silence:
+/// the admin knows something went wrong for someone and has no route to finding
+/// out who. Successes stay collapsed to a count — it is the problems that need
+/// the room.
+Future<List<BulkOutcome>?> showBulkResultDialog(
+  BuildContext context, {
+  required String title,
+  required int sent,
+  required List<BulkOutcome> outcomes,
+}) {
+  final problems = outcomes.where((outcome) => outcome.status != 'sent').toList();
+  final retryable = problems.where((outcome) => outcome.retryable).toList();
+  return showDialog<List<BulkOutcome>>(
+    context: context,
+    builder: (dialogContext) {
+      final theme = Theme.of(dialogContext);
+      final colors = theme.portal;
+      return AlertDialog(
+        title: Text(title),
+        content: ConstrainedBox(
+          // Bounded so a 200-person event scrolls inside the dialog instead of
+          // growing it past the viewport.
+          constraints: const BoxConstraints(maxWidth: 520, maxHeight: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$sent sent successfully.',
+                style: theme.textTheme.bodyMedium?.copyWith(color: colors.success),
+              ),
+              if (problems.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: Space.sm),
+                  child: Text('Nothing needed attention.', style: theme.textTheme.bodyMedium),
+                )
+              else ...[
+                const SizedBox(height: Space.md),
+                Text(
+                  '${problems.length} need${problems.length == 1 ? 's' : ''} attention',
+                  style: theme.textTheme.titleSmall,
+                ),
+                const SizedBox(height: Space.xs),
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: problems.length,
+                    separatorBuilder: (_, __) => divider,
+                    itemBuilder: (_, index) {
+                      final outcome = problems[index];
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: Space.xs),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            StatusBadge(
+                              outcome.status.toUpperCase(),
+                              tone: outcome.status == 'failed' ? BadgeTone.danger : BadgeTone.warning,
+                            ),
+                            const SizedBox(width: Space.sm),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(outcome.name, style: theme.textTheme.bodyMedium),
+                                  if (outcome.email != null && outcome.email!.isNotEmpty)
+                                    Text(
+                                      outcome.email!,
+                                      style: theme.textTheme.labelSmall
+                                          ?.copyWith(color: colors.textTertiary),
+                                    ),
+                                  if (outcome.reason != null)
+                                    Text(
+                                      outcome.reason!,
+                                      style: theme.textTheme.labelSmall
+                                          ?.copyWith(color: colors.textSecondary),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Close')),
+          if (retryable.isNotEmpty)
+            ElevatedButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, retryable),
+              icon: const Icon(Icons.refresh),
+              label: Text('Retry ${retryable.length}'),
+            ),
+        ],
+      );
+    },
+  );
+}
