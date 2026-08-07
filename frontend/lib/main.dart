@@ -15,6 +15,7 @@ import 'pages/event_detail_page.dart';
 import 'pages/events_page.dart';
 import 'pages/login_page.dart';
 import 'pages/notification_center_page.dart';
+import 'pages/password_reset_page.dart';
 import 'pages/public_survey_page.dart';
 import 'pages/public_test_page.dart';
 import 'pages/settings_page.dart';
@@ -75,12 +76,21 @@ class _CeuPortalAppState extends State<CeuPortalApp> {
     final testToken = params['test'];
     final surveyToken = params['survey'];
     final checkinToken = params['checkin'];
-    if (testToken != null || surveyToken != null || checkinToken != null || params.containsKey('verify')) {
+    // Password reset arrives the same way, and for the same reason: whoever
+    // follows the link cannot sign in, so it has to work with no session.
+    final resetToken = params['reset'];
+    if (testToken != null ||
+        surveyToken != null ||
+        checkinToken != null ||
+        resetToken != null ||
+        params.containsKey('verify')) {
       return MaterialApp(
         title: 'CEU Compliance Portal',
         debugShowCheckedModeBanner: false,
         theme: buildPortalTheme(),
-        home: testToken != null
+        home: resetToken != null
+            ? PasswordResetPage(api: widget.session.api, token: resetToken)
+            : testToken != null
             ? PublicTestPage(
                 api: widget.session.api,
                 token: testToken,
