@@ -61,11 +61,25 @@ The portal stores, for each training event:
 
 - Attendee records and issued certificates are retained for **seven (7) years**
   from the date of the associated training event, consistent with our CEU
-  provider obligations.
+  provider obligations. This is enforced by the application, not only by
+  policy: an event that holds a delivered certificate inside its retention
+  window cannot be deleted, and the roster tools cannot remove one either.
 - Certificates are generated from an immutable snapshot of the attendee's
   record, so each issued certificate can be reproduced and verified for the full
-  retention period.
-- Records are securely deleted after the retention period has elapsed.
+  retention period. Reissuing a certificate renders it from that stored
+  snapshot rather than from current event data, so a later correction to an
+  event's details cannot alter a document that has already been issued.
+- **Withdrawal is by revocation, not deletion.** Where a certificate was issued
+  in error, it is marked revoked rather than destroyed: the record, its
+  certificate number, and the audit trail of who revoked it and when are all
+  retained for the full seven years. The public verification page reports such
+  a certificate as revoked, so a holder presenting the original document can be
+  told it is no longer valid — rather than the number simply failing to resolve.
+- Records past the retention period are securely deleted as part of a periodic
+  records review. Deletion is a deliberate, operator-initiated step rather than
+  an automatic background process, so that the removal of compliance records is
+  always a reviewed action; it reports what it will remove before removing
+  anything, and each purge is recorded in the audit log.
 
 ## 5. Current status of the production environment
 

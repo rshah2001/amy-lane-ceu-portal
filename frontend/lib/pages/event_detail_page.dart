@@ -625,20 +625,44 @@ class _QuestionsCard extends StatelessWidget {
   }
 }
 
-class _SummaryStrip extends StatelessWidget {
+class _SummaryStrip extends StatefulWidget {
   const _SummaryStrip({required this.session, required this.eventId, required this.onOpenCompliance});
   final SessionController session;
   final int eventId;
   final VoidCallback onOpenCompliance;
 
-  bool get isAdmin => session.user!.isAdmin;
+  @override
+  State<_SummaryStrip> createState() => _SummaryStripState();
+}
+
+class _SummaryStripState extends State<_SummaryStrip> {
+  // Held in state rather than created in build(). A FutureBuilder whose future
+  // is built inline re-issues the request on every rebuild — a theme change, a
+  // parent setState, a window resize — so simply resizing the window fired a
+  // burst of /summary calls and flashed the strip back to its progress bar
+  // each time.
+  late Future<dynamic> summary = _fetch();
+
+  Future<dynamic> _fetch() => widget.session.api.get('/events/${widget.eventId}/summary');
+
+  @override
+  void didUpdateWidget(_SummaryStrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Only refetch when it is genuinely a different event.
+    if (oldWidget.eventId != widget.eventId) {
+      setState(() => summary = _fetch());
+    }
+  }
+
+  bool get isAdmin => widget.session.user!.isAdmin;
+  VoidCallback get onOpenCompliance => widget.onOpenCompliance;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.portal;
     return FutureBuilder<dynamic>(
-      future: session.api.get('/events/$eventId/summary'),
+      future: summary,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Card(
