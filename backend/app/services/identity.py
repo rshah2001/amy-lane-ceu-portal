@@ -59,3 +59,71 @@ def split_name(full_name: str) -> tuple[str | None, str | None]:
     if len(parts) == 1:
         return parts[0], None
     return parts[0], parts[-1]
+
+
+# Generational suffixes are part of the name, not of the person's identity:
+# "Bob Smith" and "Bob Smith Jr." are usually one person written two ways.
+# They are NOT interchangeable with each other, though - see names_are_variants.
+GENERATIONAL_SUFFIXES = {"jr", "jnr", "sr", "snr", "ii", "iii", "iv"}
+
+
+def _name_parts(value: str | None) -> tuple[list[str], str | None]:
+    """Split a name into its normalized tokens and its generational suffix."""
+    tokens = normalize_name(value).split()
+    suffix: str | None = None
+    # Only ever strip a suffix that trails a real first+last name, so a
+    # two-token name like "Iva Sr" keeps both tokens and stays matchable.
+    while len(tokens) > 2 and tokens[-1] in GENERATIONAL_SUFFIXES:
+        suffix = tokens[-1] if suffix is None else suffix
+        tokens.pop()
+    return tokens, suffix
+
+
+def core_name(value: str | None) -> str:
+    """A coarse bucketing key: the name without middle names or suffixes.
+
+    "Bob Smith", "Bob A. Smith" and "Bob Smith Jr." all bucket to "bob smith".
+    This key only ever *proposes* candidates -- because it also buckets
+    "Bob Smith Jr." and "Bob Smith Sr." together, a proposal must always be
+    confirmed with names_are_variants before two records are treated as one.
+    """
+    tokens, _ = _name_parts(value)
+    if len(tokens) > 2:
+        tokens = [tokens[0], tokens[-1]]
+    return " ".join(tokens)
+
+
+def names_are_variants(left: str | None, right: str | None) -> bool:
+    """True when two names are the same person written differently.
+
+    Tolerates what exports and sign-in sheets drop -- a middle name/initial or
+    a generational suffix present on one side and absent on the other -- while
+    refusing anything that *conflicts*:
+
+    - "Bob Smith Jr." vs "Bob Smith Sr." are two people (a real pattern at
+      family-owned dealers), never one.
+    - "Bob A. Smith" vs "Bob C. Smith" are two people.
+    - "Bob A. Smith" vs "Bob Andrew Smith" are one person (same initial).
+
+    A false merge issues one certificate for two people, which is worse than a
+    false split, so anything this function is unsure about must answer False.
+    """
+    left_tokens, left_suffix = _name_parts(left)
+    right_tokens, right_suffix = _name_parts(right)
+    if len(left_tokens) < 2 or len(right_tokens) < 2:
+        # A single-token name ("Cher", or a truncated export) carries too
+        # little signal to merge on.
+        return False
+    if left_tokens[0] != right_tokens[0] or left_tokens[-1] != right_tokens[-1]:
+        return False
+    if left_suffix and right_suffix and left_suffix != right_suffix:
+        return False
+    left_middles = left_tokens[1:-1]
+    right_middles = right_tokens[1:-1]
+    if not left_middles or not right_middles:
+        # One side simply omits the middle name(s): the classic sign-in-sheet
+        # vs registration-export difference.
+        return True
+    # Both spell out a middle name: the initials must line up, so "Bob A."
+    # and "Bob Andrew" match while "Bob A." and "Bob C." do not.
+    return [token[0] for token in left_middles] == [token[0] for token in right_middles]

@@ -86,6 +86,9 @@ class EventCreate(BaseModel):
     event_type: str = "lunch_and_learn"
     post_test_url: str | None = None
     test_mode: str = "external"
+    # Defaults to True so an event created without saying otherwise keeps
+    # gating CEU credit on a passed post-test.
+    test_required: bool = True
     test_questions: list[TestQuestionIn] = Field(default_factory=list)
     survey_mode: str = "internal"
     survey_required: bool = False
@@ -108,6 +111,7 @@ class EventUpdate(BaseModel):
     event_type: str | None = None
     post_test_url: str | None = None
     test_mode: str | None = None
+    test_required: bool | None = None
     test_questions: list[TestQuestionIn] | None = None
     survey_mode: str | None = None
     survey_required: bool | None = None
@@ -132,6 +136,7 @@ class EventOut(ORMModel):
     event_type: str
     post_test_url: str | None
     test_mode: str
+    test_required: bool
     test_token: str | None
     checkin_token: str | None
     test_questions: list
@@ -147,6 +152,9 @@ class EventOut(ORMModel):
     created_by_id: int
     assigned_presenter_id: int | None
     assigned_presenter_name: str | None = None
+    # Setup problems the admin UI should show loudly (e.g. a required post-test
+    # that was never configured, which blocks every attendee).
+    configuration_warnings: list[str] = Field(default_factory=list)
     created_at: datetime
 
 

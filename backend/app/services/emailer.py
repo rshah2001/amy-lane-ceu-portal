@@ -177,7 +177,11 @@ def _public_link(token_param: str, token: str, name: str, email: str) -> str:
 def send_invite_email(event: TrainingEvent, attendee_name: str, recipient: str) -> str:
     """Email an attendee their personalized post-test and/or survey links."""
     actions: list[tuple[str, str]] = []
-    if event.test_mode == "internal" and event.test_token:
+    # An internal test link is only worth sending once the test actually has
+    # questions -- the same guard the check-in next-steps and the QR slide links
+    # already apply. Without it the attendee lands on a submittable quiz with
+    # nothing in it and no way to finish what the email asked for.
+    if event.test_mode == "internal" and event.test_token and event.test_questions:
         actions.append(("Complete your post-test", _public_link("test", event.test_token, attendee_name, recipient)))
     elif event.test_mode == "external" and event.post_test_url:
         actions.append(("Complete your post-test", event.post_test_url))
@@ -185,6 +189,15 @@ def send_invite_email(event: TrainingEvent, attendee_name: str, recipient: str) 
         actions.append(("Complete the feedback survey", _public_link("survey", event.survey_token, attendee_name, recipient)))
     elif event.survey_mode == "external" and event.external_survey_url:
         actions.append(("Complete the feedback survey", event.external_survey_url))
+
+    if not actions:
+        # "Please finish the following:" with nothing under it is a dead end for
+        # the attendee and invisible to the admin. Refusing surfaces it as a
+        # per-recipient failure in the distribution report instead.
+        raise RuntimeError(
+            "This event has no post-test or survey link to send yet — add internal "
+            "questions or an external link before distributing."
+        )
 
     lines = [
         f"Hello {attendee_name},",

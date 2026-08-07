@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_admin
 from app.api.events import get_visible_event
 from app.core.config import settings
-from app.core.rate_limit import PublicRateLimit
+from app.core.rate_limit import PublicRateLimit, client_ip
 from app.db.session import get_db
 from app.models.attendee import Attendee
 from app.models.survey_result import SurveyResult
@@ -29,6 +29,7 @@ from app.services.attendee_match import get_or_create_link, match_or_create_atte
 from app.services.audit import record_audit
 from app.services.csv_safe import csv_safe
 from app.services.compliance import recalculate_event
+from app.services.identity import normalize_email
 from app.services.survey_ai import summarize_survey_answers
 
 router = APIRouter(tags=["Surveys"])
@@ -37,6 +38,72 @@ STOP_WORDS = {
     "have", "just", "more", "that", "the", "this", "very", "was", "were",
     "what", "with", "would", "your",
 }
+
+
+EMPTY_SUBMISSION_DETAIL = "Answer at least one survey question before submitting."
+
+
+def _substantive_answers(answers: dict[str, str]) -> dict[str, str]:
+    """The answers that actually say something.
+
+    A form posted with every box left empty arrives as ``{"liked": "", ...}``,
+    which is the same nothing as an empty payload -- neither may satisfy an
+    event's ``survey_required`` gate, so emptiness is judged on the stripped
+    values, not on whether keys are present.
+    """
+    return {
+        question_id: answer
+        for question_id, answer in answers.items()
+        if str(answer).strip()
+    }
+
+
+def _unanswered_required(event: TrainingEvent, answered: dict[str, str]) -> list[str]:
+    """Required question ids this submission left blank.
+
+    ``required`` is read from the event's own stored question dicts. Nothing
+    writes it today (``SurveyQuestionIn`` has no such field, so an admin cannot
+    yet mark a question mandatory), which is exactly why it is honoured here:
+    adding the flag to the schema and the event editor then needs no change to
+    this endpoint. Until then the floor below -- at least one real answer --
+    is what stands between a blank POST and a satisfied survey requirement.
+    """
+    return [
+        str(question.get("id"))
+        for question in event.survey_questions or []
+        if question.get("required")
+        and question.get("id") is not None
+        and str(question.get("id")) not in answered
+    ]
+
+
+def _completion_basis(attendee: Attendee, submitted_email: str | None) -> str | None:
+    """Why (or why not) a public submission may credit this attendee's survey.
+
+    The survey link is a shared secret printed on a slide: anyone holding it can
+    post any name, and that name is matched to an attendee. Crediting every
+    match lets one person satisfy another's survey requirement, so a submission
+    that names an attendee who already carries an identity -- without carrying
+    that identity itself -- records the response but leaves the flag alone.
+
+    The two accepted bases, and why they are the ones matching can vouch for:
+
+    - ``email_on_submission``: the submission carried an address, so
+      ``match_or_create_attendee`` either resolved this attendee *by* that
+      address (the submitter knew what is on the record) or resolved a record
+      that had no address at all -- an email-bearing submission is only ever
+      name-matched into an email-less row. Nothing else can be reached.
+    - ``no_email_on_record``: a name-only submission naming an attendee with no
+      address on file. There is no identity to prove, and the survey flag alone
+      hands nothing out: eligibility also requires a valid email.
+
+    Returns the basis for crediting, or ``None`` when the submission may not.
+    """
+    if submitted_email and normalize_email(submitted_email):
+        return "email_on_submission"
+    if not attendee.normalized_email:
+        return "no_email_on_record"
+    return None
 
 
 def get_survey_event(db: Session, token: str) -> TrainingEvent:
@@ -61,6 +128,7 @@ def public_survey(token: str, db: Session = Depends(get_db)) -> PublicSurveyOut:
 def submit_public_survey(
     token: str,
     payload: PublicSurveySubmission,
+    request: Request,
     db: Session = Depends(get_db),
     _rate_limit: None = Depends(PublicRateLimit("survey", "token")),
 ) -> dict:
@@ -97,16 +165,31 @@ def submit_public_survey(
                 status_code=422,
                 detail="One of the answers is not a valid option for its question.",
             )
+    # A submission has to actually answer something to count. Without this an
+    # empty POST marked survey_completed, so an event configured with
+    # survey_required was satisfied by a request carrying no feedback at all.
+    # This is about empty *answers* only -- name and email stay optional, and
+    # anonymous submissions are unaffected.
+    answered = _substantive_answers(payload.answers)
+    if not answered:
+        raise HTTPException(status_code=422, detail=EMPTY_SUBMISSION_DETAIL)
+    missing = _unanswered_required(event, answered)
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Please answer the required question(s): {', '.join(missing[:5])}",
+        )
     # Name and email are both optional: with neither, the response is stored
     # anonymously (no attendee linked); with either one, we match/create an
     # attendee from whatever identity was given, as before.
+    submitted_email = str(payload.email) if payload.email else None
     attendee = None
     if payload.full_name or payload.email:
         attendee = match_or_create_attendee(
             db,
             event.id,
             payload.full_name or "",
-            str(payload.email) if payload.email else None,
+            submitted_email,
         )
     # Every submission is kept as its own row: the same attendee may answer
     # more than once and admins want to see all responses, not just the last.
@@ -120,11 +203,20 @@ def submit_public_survey(
     result.completed = True
     result.completed_at = datetime.now(timezone.utc)
     result.raw_payload = payload.answers
+    basis = _completion_basis(attendee, submitted_email) if attendee else None
+    # A submission that named someone else's record: kept, linked, but not
+    # allowed to move their compliance state (see _completion_basis).
+    refused = attendee is not None and basis is None
     if attendee:
         link = get_or_create_link(db, event.id, attendee.id)
-        link.survey_completed = True
+        if basis:
+            link.survey_completed = True
     db.flush()
     recalculate_event(db, event.id)
+    # Every public submission is audited with where it came from: the endpoint
+    # is unauthenticated, so the audit trail is the only record of who claimed
+    # to be whom, and of whether that claim moved anyone's compliance state.
+    caller = client_ip(request)
     record_audit(
         db,
         "survey.submitted",
@@ -132,9 +224,52 @@ def submit_public_survey(
         result.id,
         None,
         event.id,
-        {"attendee_id": attendee.id if attendee else None},
+        {
+            "attendee_id": attendee.id if attendee else None,
+            "source": "public_web",
+            "client_ip": caller,
+            "submitted_name": payload.full_name,
+            "submitted_email": submitted_email,
+            "answered": len(answered),
+            "survey_completed": bool(basis),
+            "completion_basis": basis,
+        },
     )
+    if refused:
+        # Its own action so an admin can find impersonation attempts without
+        # reading every submission: someone named an attendee who already has
+        # an identity on file, and did not submit that identity.
+        record_audit(
+            db,
+            "survey.completion_refused",
+            "attendee",
+            attendee.id,
+            None,
+            event.id,
+            {
+                "reason": "named_an_existing_identity_without_proving_it",
+                "source": "public_web",
+                "client_ip": caller,
+                "submitted_name": payload.full_name,
+                "submitted_email": submitted_email,
+            },
+        )
     db.commit()
+    if refused:
+        # The response is kept either way -- it is real feedback -- but the
+        # submitter is told it was not counted, otherwise an attendee who is on
+        # the roster with an email and types only their name is silently left
+        # short of their certificate. The extra keys are only present on this
+        # path, so the success contract ({"status": "submitted"}) is unchanged.
+        return {
+            "status": "submitted",
+            "credited": False,
+            "message": (
+                "Thanks -- your feedback was recorded. To have it counted towards "
+                "your certificate, submit it again using the email address you "
+                "registered with."
+            ),
+        }
     return {"status": "submitted"}
 
 

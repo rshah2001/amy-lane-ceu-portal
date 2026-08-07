@@ -19,7 +19,12 @@ from app.models.user import User
 from app.schemas.common import BulkActionResult, CertificateOut, ManualIssueRequest
 from app.services.attendee_match import get_or_create_link, match_or_create_attendee
 from app.services.audit import record_audit
-from app.services.certificates import certificate_snapshot, generate_certificate_pdf, make_certificate_number
+from app.services.certificates import (
+    certificate_snapshot,
+    generate_certificate_pdf,
+    make_certificate_number,
+    reissue_certificate_pdf,
+)
 from app.services.compliance import recalculate_event
 from app.services.csv_import import save_upload
 from app.services.emailer import send_certificate_email
@@ -91,11 +96,13 @@ def maybe_mark_event_completed(db: Session, event: TrainingEvent, current_user: 
 def ensure_pdf(link: EventAttendee, certificate: Certificate) -> Path:
     # The free-tier host has an ephemeral disk, so a generated cert PDF can
     # disappear on redeploy while its DB row persists. First try to restore it
-    # from the storage backend (Supabase, when configured); otherwise re-create
-    # it from the same immutable data (identical output) so send/download work.
+    # from the storage backend (Supabase, when configured); otherwise rebuild it
+    # from the snapshot captured at issue time -- never from the live event,
+    # which an admin may have edited since. A certificate number identifies one
+    # document, so re-issuing must reproduce that document, not a new one.
     path = Path(certificate.pdf_path)
     if not storage.ensure_local(path):
-        generate_certificate_pdf(link, certificate.certificate_number, output_path=path)
+        reissue_certificate_pdf(link, certificate, output_path=path)
     return path
 
 

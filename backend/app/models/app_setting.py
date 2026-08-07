@@ -1,10 +1,11 @@
 from typing import Any
 
-from sqlalchemy import JSON, String
+from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 from app.models.mixins import TimestampMixin
+from app.models.types import JSON
 
 
 class AppSetting(TimestampMixin, Base):

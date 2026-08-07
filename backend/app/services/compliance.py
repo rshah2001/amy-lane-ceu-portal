@@ -14,10 +14,16 @@ def evaluate_link(link: EventAttendee) -> EventAttendee:
     link.has_valid_email = is_valid_email(link.attendee.email)
     if not link.attended:
         reasons.append("Not found on attendance sheet")
-    if not link.test_completed:
-        reasons.append("Post-test not completed")
-    elif link.test_score is None or link.test_score < PASSING_SCORE:
-        reasons.append("Post-test score below 80%")
+    # The post-test only blocks eligibility when the event is configured to have
+    # one (same shape as the survey rule below). Without this gate an event with
+    # no post-test at all marks every attendee permanently ineligible, since
+    # nothing can ever set test_completed. test_required defaults to TRUE, so an
+    # event only stops requiring a test when an admin says so explicitly.
+    if link.event.test_required:
+        if not link.test_completed:
+            reasons.append("Post-test not completed")
+        elif link.test_score is None or link.test_score < PASSING_SCORE:
+            reasons.append("Post-test score below 80%")
     # The feedback survey is encouraged (it supports association renewals) and
     # only blocks eligibility when the event is configured to require it.
     if link.event.survey_required and not link.survey_completed:
@@ -53,7 +59,9 @@ def lifecycle_status(link: EventAttendee) -> str:
         return "eligible"
     if not link.attended:
         return "pending_attendance"
-    if not link.test_completed or link.test_score is None or link.test_score < PASSING_SCORE:
+    if link.event.test_required and (
+        not link.test_completed or link.test_score is None or link.test_score < PASSING_SCORE
+    ):
         return "pending_test"
     if link.event.survey_required and not link.survey_completed:
         return "pending_survey"

@@ -26,6 +26,7 @@ from app.schemas.common import (
 )
 from app.services import storage
 from app.services.audit import record_audit
+from app.services.retention import retention_block
 from app.services.survey_template import get_survey_template
 
 PASSING_SCORE = Decimal("80")
@@ -249,10 +250,33 @@ def delete_event(
 ) -> Response:
     """Permanently remove an event and everything attached to it (attendees'
     links, uploads, results, certificates). The deletion itself is audited
-    with what was destroyed; the global attendee records are untouched."""
+    with what was destroyed; the global attendee records are untouched.
+
+    Refused while the event still holds a certificate inside the retention
+    period: we attest to a regulator that issued certificates are kept for
+    seven years, and the typed-DELETE confirmation is a check that the admin
+    meant to press the button, not authority to break that commitment.
+    """
     event = db.scalar(select(TrainingEvent).where(TrainingEvent.id == event_id))
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    block = retention_block(db, event)
+    if block:
+        record_audit(
+            db,
+            "event.delete_blocked",
+            "training_event",
+            event.id,
+            current_user,
+            event.id,
+            {
+                "reason": "retention_period",
+                "issued_certificates": block.certificates,
+                "retained_until": block.retained_until.isoformat(),
+            },
+        )
+        db.commit()
+        raise HTTPException(status_code=409, detail=block.message)
     certificates = list(
         db.scalars(
             select(Certificate).join(EventAttendee).where(EventAttendee.event_id == event_id)
