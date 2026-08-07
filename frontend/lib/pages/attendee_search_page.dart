@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
+import '../widgets/portal_table.dart';
 
 class AttendeeSearchPage extends StatefulWidget {
   const AttendeeSearchPage({super.key, required this.session});
@@ -13,7 +14,7 @@ class AttendeeSearchPage extends StatefulWidget {
   State<AttendeeSearchPage> createState() => _AttendeeSearchPageState();
 }
 
-class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
+class _AttendeeSearchPageState extends State<AttendeeSearchPage> with LatestRequest {
   final query = TextEditingController();
   List<Map<String, dynamic>>? rows;
   List<TrainingEvent> events = const [];
@@ -54,13 +55,11 @@ class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
     }
   }
 
-  /// Guards against an out-of-order response: flipping the event filter twice
-  /// leaves two requests in flight, and without this the slower (older) one
-  /// would win and show a roster that doesn't match the dropdown.
-  int _requestSeq = 0;
-
   Future<void> search() async {
-    final seq = ++_requestSeq;
+    // This page had the app's only stale-response guard, written inline; it now
+    // uses the shared one so the other four pages get the same behaviour rather
+    // than four near-copies. See `LatestRequest`.
+    final request = beginRequest();
     setState(() {
       rows = null;
       error = null;
@@ -72,19 +71,24 @@ class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
       ];
       final result = await widget.session.api
           .get('/attendees/search${params.isEmpty ? '' : '?${params.join('&')}'}') as List;
-      if (mounted && seq == _requestSeq) {
+      if (request.isCurrent) {
         setState(() {
           rows = result.cast<Map<String, dynamic>>();
           error = null;
         });
       }
     } catch (exception) {
-      if (mounted && seq == _requestSeq) {
-        final message = humanizeError(exception);
-        setState(() => error = message);
-        announceToScreenReader(context, message);
-      }
+      if (request.isCurrent) _fail(exception);
     }
+  }
+
+  /// Shows a failure and speaks it — see the note on the same helper in
+  /// compliance_page.dart.
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
   }
 
   /// Buckets the flat result rows into one group per event, newest event first,
@@ -215,9 +219,66 @@ class _EventGroup {
   final List<Map<String, dynamic>> rows = [];
 }
 
+/// The status a row is shown — and sorted — by. Approved outranks eligible,
+/// which outranks neither, so sorting the column groups the roster the way it
+/// is reviewed rather than alphabetically by badge text.
+(String, BadgeTone, int) _searchStatus(Map<String, dynamic> row) {
+  if (row['approved'] == true) return ('APPROVED', BadgeTone.success, 2);
+  if (row['eligible'] == true) return ('ELIGIBLE', BadgeTone.success, 1);
+  return ('INELIGIBLE', BadgeTone.danger, 0);
+}
+
 class _GroupedResults extends StatelessWidget {
   const _GroupedResults({required this.groups});
   final List<_EventGroup> groups;
+
+  List<TableColumn<Map<String, dynamic>>> _columns(ThemeData theme) => [
+        TableColumn<Map<String, dynamic>>(
+          label: 'Attendee',
+          width: 200,
+          flex: 2,
+          sortValue: (row) => row['full_name'] as String?,
+          cell: (context, row) => Text(
+            row['full_name'] as String,
+            style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+          ),
+        ),
+        TableColumn<Map<String, dynamic>>(
+          label: 'Email',
+          width: 230,
+          flex: 2,
+          sortValue: (row) => row['email'] as String?,
+          cell: (context, row) => Text(
+            row['email'] as String? ?? '',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        TableColumn<Map<String, dynamic>>(
+          label: 'Company',
+          width: 190,
+          flex: 1,
+          sortValue: (row) => row['company'] as String?,
+          cell: (context, row) => Text(
+            row['company'] as String? ?? '',
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        TableColumn<Map<String, dynamic>>(
+          label: 'Status',
+          width: 150,
+          sortValue: (row) => _searchStatus(row).$3,
+          cell: (context, row) {
+            final (label, tone, _) = _searchStatus(row);
+            return StatusBadge(label, tone: tone);
+          },
+        ),
+        TableColumn<Map<String, dynamic>>(
+          label: 'Certificate',
+          width: 210,
+          sortValue: (row) => row['certificate_number'] as String?,
+          cell: (context, row) => Text(row['certificate_number'] as String? ?? ''),
+        ),
+      ];
 
   @override
   Widget build(BuildContext context) {
@@ -259,37 +320,20 @@ class _GroupedResults extends StatelessWidget {
           ),
           childrenPadding: const EdgeInsets.fromLTRB(Space.md, 0, Space.md, Space.sm + 2),
           children: [
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: DataTable(
-                columns: const [
-                  DataColumn(label: Text('Attendee')),
-                  DataColumn(label: Text('Email')),
-                  DataColumn(label: Text('Company')),
-                  DataColumn(label: Text('Status')),
-                  DataColumn(label: Text('Certificate')),
-                ],
-                rows: group.rows
-                    .map(
-                      (row) => DataRow(
-                        cells: [
-                          DataCell(ConstrainedBox(
-                            constraints: const BoxConstraints(minWidth: 190, maxWidth: 280),
-                            child: Text(
-                              row['full_name'] as String,
-                              style: theme.textTheme.bodyMedium
-                                  ?.copyWith(fontWeight: FontWeight.w600),
-                            ),
-                          )),
-                          DataCell(Text(row['email'] as String? ?? '')),
-                          DataCell(Text(row['company'] as String? ?? '')),
-                          DataCell(StatusBadge(row['approved'] == true ? 'APPROVED' : row['eligible'] == true ? 'ELIGIBLE' : 'INELIGIBLE', tone: row['approved'] == true || row['eligible'] == true ? BadgeTone.success : BadgeTone.danger)),
-                          DataCell(Text(row['certificate_number'] as String? ?? '')),
-                        ],
-                      ),
-                    )
-                    .toList(),
-              ),
+            PortalTable<Map<String, dynamic>>(
+              caption: 'Attendees on ${group.title}',
+              columns: _columns(theme),
+              rows: group.rows,
+              emptyIcon: Icons.person_search_outlined,
+              emptyMessage: 'No attendees on this event',
+              // Paged and shrink-wrapped: these tables sit inside an expanded
+              // group in a page-level scroller, so there is no viewport of
+              // their own to virtualize against — and a ten-row page keeps an
+              // event with 300 attendees from burying the groups under it.
+              rowsPerPage: 10,
+              shrinkWrap: true,
+              initialSortColumn: 0,
+              rowSemanticLabel: (row) => row['full_name'] as String?,
             ),
           ],
         );

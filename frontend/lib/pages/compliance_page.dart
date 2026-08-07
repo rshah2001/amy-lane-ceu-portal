@@ -4,6 +4,7 @@ import '../core/api_client.dart';
 import '../core/session.dart';
 import '../models/models.dart';
 import '../widgets/common.dart';
+import '../widgets/portal_table.dart';
 
 class CompliancePage extends StatefulWidget {
   const CompliancePage({super.key, required this.session, required this.event});
@@ -14,7 +15,7 @@ class CompliancePage extends StatefulWidget {
   State<CompliancePage> createState() => _CompliancePageState();
 }
 
-class _CompliancePageState extends State<CompliancePage> {
+class _CompliancePageState extends State<CompliancePage> with LatestRequest {
   List<ComplianceRecord>? records;
   final selected = <int>{};
   final search = TextEditingController();
@@ -60,6 +61,10 @@ class _CompliancePageState extends State<CompliancePage> {
 
   Future<void> load() async {
     if (!mounted) return;
+    // Both filters reload, so two changes in quick succession leave two reads
+    // in flight and the slower one would otherwise repaint the roster to match
+    // a filter the admin has already moved off.
+    final request = beginRequest();
     setState(() {
       error = null;
       records = null;
@@ -69,14 +74,14 @@ class _CompliancePageState extends State<CompliancePage> {
       if (filter != 'all') params.add('eligibility=${Uri.encodeQueryComponent(filter)}');
       if (search.text.trim().isNotEmpty) params.add('search=${Uri.encodeQueryComponent(search.text.trim())}');
       final result = await widget.session.api.get('/events/${widget.event.id}/compliance${params.isEmpty ? '' : '?${params.join('&')}'}') as List;
-      if (mounted) {
+      if (request.isCurrent) {
         setState(() {
           records = result.map((item) => ComplianceRecord.fromJson(item as Map<String, dynamic>)).toList();
           selected.removeWhere((id) => !records!.any((record) => record.id == id));
         });
       }
     } catch (exception) {
-      if (mounted) _fail(exception);
+      if (request.isCurrent) _fail(exception);
     }
   }
 
@@ -477,28 +482,164 @@ class _CompliancePageState extends State<CompliancePage> {
   }
 
   /// An icon-only requirement column that still has a name.
-  DataColumn _requirementColumn(
-    BuildContext context, {
+  ///
+  /// Four words would not fit side by side at this width, but an unnamed glyph
+  /// announces as nothing at all — so the icon carries the label in semantics
+  /// and in a tooltip. Sortable on the underlying fact, which is how an admin
+  /// pulls "everyone still missing the survey" to the top of a 200-row roster.
+  TableColumn<ComplianceRecord> _requirementColumn({
     required IconData icon,
     required String label,
     required String tooltip,
+    required Object? Function(ComplianceRecord) sortValue,
+    required Widget Function(BuildContext, ComplianceRecord) cell,
+    double width = 76,
   }) {
-    return DataColumn(
-      label: Semantics(
-        label: label,
-        excludeSemantics: true,
-        child: Tooltip(
-          message: tooltip,
-          child: Icon(icon, size: 18, color: Theme.of(context).portal.textSecondary),
+    return TableColumn<ComplianceRecord>(
+      label: '',
+      headerIcon: icon,
+      semanticLabel: label,
+      tooltip: tooltip,
+      width: width,
+      sortValue: sortValue,
+      cell: cell,
+    );
+  }
+
+  List<TableColumn<ComplianceRecord>> _columns(BuildContext context, bool isAdmin) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
+    return [
+      TableColumn<ComplianceRecord>(
+        label: 'Attendee',
+        // The widest column and the only one worth giving a big screen to; the
+        // rest are badges and glyphs that gain nothing from extra room.
+        width: 240,
+        flex: 1,
+        sortValue: (record) => record.fullName,
+        cell: (context, record) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              record.fullName,
+              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            Text(
+              record.email ?? 'No email',
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: colors.textTertiary,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+            if (record.reasons.isNotEmpty)
+              Tooltip(
+                message: record.reasons.join('\n'),
+                child: Text(
+                  record.reasons.join(' • '),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: colors.danger,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
-    );
+      _requirementColumn(
+        icon: Icons.event_available_outlined,
+        label: 'Attended',
+        tooltip: 'Attended the session',
+        sortValue: (record) => record.attended,
+        cell: (context, record) => CheckIcon(record.attended, label: 'Attended'),
+      ),
+      _requirementColumn(
+        icon: Icons.quiz_outlined,
+        label: 'Post-test passed',
+        tooltip: 'Post-test passed (80% or higher)',
+        width: 110,
+        // Sorted on the score, not the pass flag: "who is closest to passing"
+        // is the question a coordinator chasing retakes actually has.
+        sortValue: (record) => record.testScore,
+        cell: (context, record) => Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CheckIcon(
+              record.testCompleted && (record.testScore ?? 0) >= 80,
+              label: 'Post-test passed',
+            ),
+            const SizedBox(width: Space.xxs + 1),
+            Text(
+              record.testScore == null ? '—' : '${record.testScore!.toStringAsFixed(0)}%',
+              style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w400),
+            ),
+          ],
+        ),
+      ),
+      _requirementColumn(
+        icon: Icons.rate_review_outlined,
+        label: 'Survey completed',
+        tooltip: 'Survey completed',
+        sortValue: (record) => record.surveyCompleted,
+        cell: (context, record) =>
+            CheckIcon(record.surveyCompleted, label: 'Survey completed'),
+      ),
+      _requirementColumn(
+        icon: Icons.alternate_email,
+        label: 'Valid email',
+        tooltip: 'Valid email address on file',
+        sortValue: (record) => record.validEmail,
+        cell: (context, record) => CheckIcon(record.validEmail, label: 'Valid email'),
+      ),
+      TableColumn<ComplianceRecord>(
+        label: 'Status',
+        width: 160,
+        sortValue: (record) => record.lifecycleStatus,
+        cell: (context, record) => lifecycleBadge(record.lifecycleStatus),
+      ),
+      if (isAdmin)
+        TableColumn<ComplianceRecord>(
+          label: 'Actions',
+          // Wide enough for both 48px icon buttons plus the cell padding: an
+          // approved-but-unsent row carries "revoke approval" *and* "remove".
+          width: 140,
+          cell: (context, record) => Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (record.approved && record.certificateSentAt == null)
+                IconButton(
+                  tooltip: 'Revoke approval for ${record.fullName}',
+                  onPressed: working ? null : () => revoke(record),
+                  icon: Icon(Icons.undo, size: 18, color: colors.danger),
+                ),
+              // Already revoked: there is nothing left to remove — the row is
+              // retained for seven years by design — so the action says why
+              // instead of no-op'ing.
+              IconButton(
+                tooltip: record.certificateRevoked
+                    ? '${record.fullName}\'s certificate is revoked. '
+                        'The record is kept for seven years and cannot be removed.'
+                    : 'Remove ${record.fullName} from this event',
+                onPressed: working || record.certificateRevoked
+                    ? null
+                    : () => remove(record),
+                icon: Icon(
+                  Icons.person_remove_outlined,
+                  size: 18,
+                  color: colors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.portal;
     final isAdmin = widget.session.user!.isAdmin;
     return Padding(
       padding: pagePadding,
@@ -566,179 +707,36 @@ class _CompliancePageState extends State<CompliancePage> {
               const SizedBox(height: Space.sm + 2),
               Expanded(
                 child: Card(
-                  child: records == null
-                      ? const LoadingPanel(label: 'Loading compliance records')
-                      : records!.isEmpty
-                          ? const EmptyState(
-                              icon: Icons.fact_check_outlined,
-                              message: 'No attendee records match this view',
-                              detail: 'Upload the registration and attendance files, or adjust the search and eligibility filters.',
-                            )
-                          : SingleChildScrollView(
-                              child: SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                // Compact columns (icon-only requirement checks,
-                                // reasons folded into the attendee cell, one merged
-                                // status column) so the full table fits a 1280px
-                                // screen next to the sidebar without scrolling.
-                                child: DataTable(
-                                  showCheckboxColumn: isAdmin,
-                                  columnSpacing: 28,
-                                  dataRowMinHeight: 48,
-                                  // Unbounded. The old 74px cap sat below the
-                                  // attendee cell's own content — name, email,
-                                  // and up to two lines of eligibility reasons
-                                  // — so from about 130% text scale Flutter
-                                  // painted overflow stripes straight over the
-                                  // reasons, which are the whole point of the
-                                  // column.
-                                  dataRowMaxHeight: double.infinity,
-                                  columns: [
-                                    const DataColumn(label: Text('Attendee')),
-                                    // Icon-only headers announced as nothing at
-                                    // all, so the four requirement columns were
-                                    // unidentifiable by ear.
-                                    _requirementColumn(
-                                      context,
-                                      icon: Icons.event_available_outlined,
-                                      label: 'Attended',
-                                      tooltip: 'Attended the session',
-                                    ),
-                                    _requirementColumn(
-                                      context,
-                                      icon: Icons.quiz_outlined,
-                                      label: 'Post-test passed',
-                                      tooltip: 'Post-test passed (80% or higher)',
-                                    ),
-                                    _requirementColumn(
-                                      context,
-                                      icon: Icons.rate_review_outlined,
-                                      label: 'Survey completed',
-                                      tooltip: 'Survey completed',
-                                    ),
-                                    _requirementColumn(
-                                      context,
-                                      icon: Icons.alternate_email,
-                                      label: 'Valid email',
-                                      tooltip: 'Valid email address on file',
-                                    ),
-                                    const DataColumn(label: Text('Status')),
-                                    if (isAdmin)
-                                      DataColumn(
-                                        label: Semantics(label: 'Actions', child: const Text('')),
-                                      ),
-                                  ],
-                                  rows: records!
-                                      .map(
-                                        (record) => DataRow(
-                                          selected: selected.contains(record.id),
-                                          // Admins can select ineligible rows too; approving them
-                                          // asks for an explicit override confirmation.
-                                          onSelectChanged: !isAdmin || record.approved
-                                              ? null
-                                              : (value) => setState(() => value == true ? selected.add(record.id) : selected.remove(record.id)),
-                                          cells: [
-                                            DataCell(
-                                              // Min-width rather than fixed, so
-                                              // the three stacked lines can grow
-                                              // at large text scale instead of
-                                              // being clipped.
-                                              ConstrainedBox(
-                                                constraints: const BoxConstraints(minWidth: 240, maxWidth: 320),
-                                                child: Column(
-                                                  mainAxisAlignment: MainAxisAlignment.center,
-                                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                                  children: [
-                                                    Text(
-                                                      record.fullName,
-                                                      style: theme.textTheme.bodyMedium
-                                                          ?.copyWith(fontWeight: FontWeight.w600),
-                                                    ),
-                                                    Text(
-                                                      record.email ?? 'No email',
-                                                      overflow: TextOverflow.ellipsis,
-                                                      style: theme.textTheme.labelMedium?.copyWith(
-                                                        color: colors.textTertiary,
-                                                        fontWeight: FontWeight.w400,
-                                                      ),
-                                                    ),
-                                                    if (record.reasons.isNotEmpty)
-                                                      Tooltip(
-                                                        message: record.reasons.join('\n'),
-                                                        child: Text(
-                                                          record.reasons.join(' • '),
-                                                          maxLines: 2,
-                                                          overflow: TextOverflow.ellipsis,
-                                                          style: theme.textTheme.labelSmall?.copyWith(
-                                                            color: colors.danger,
-                                                            fontWeight: FontWeight.w400,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ),
-                                            DataCell(CheckIcon(record.attended, label: 'Attended')),
-                                            DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
-                                              CheckIcon(
-                                                record.testCompleted && (record.testScore ?? 0) >= 80,
-                                                label: 'Post-test passed',
-                                              ),
-                                              const SizedBox(width: Space.xxs + 1),
-                                              Text(
-                                                record.testScore == null
-                                                    ? '—'
-                                                    : '${record.testScore!.toStringAsFixed(0)}%',
-                                                style: theme.textTheme.labelMedium
-                                                    ?.copyWith(fontWeight: FontWeight.w400),
-                                              ),
-                                            ])),
-                                            DataCell(CheckIcon(record.surveyCompleted, label: 'Survey completed')),
-                                            DataCell(CheckIcon(record.validEmail, label: 'Valid email')),
-                                            DataCell(lifecycleBadge(record.lifecycleStatus)),
-                                            if (isAdmin)
-                                              DataCell(
-                                                Row(
-                                                  mainAxisSize: MainAxisSize.min,
-                                                  children: [
-                                                    if (record.approved && record.certificateSentAt == null)
-                                                      IconButton(
-                                                        tooltip: 'Revoke approval for ${record.fullName}',
-                                                        onPressed: working ? null : () => revoke(record),
-                                                        icon: Icon(Icons.undo, size: 18, color: colors.danger),
-                                                      ),
-                                                    // Already revoked: there is
-                                                    // nothing left to remove —
-                                                    // the row is retained for
-                                                    // seven years by design —
-                                                    // so the action says why
-                                                    // instead of no-op'ing.
-                                                    IconButton(
-                                                      tooltip: record.certificateRevoked
-                                                          ? '${record.fullName}\'s certificate is revoked. '
-                                                              'The record is kept for seven years and '
-                                                              'cannot be removed.'
-                                                          : 'Remove ${record.fullName} from this event',
-                                                      onPressed: working || record.certificateRevoked
-                                                          ? null
-                                                          : () => remove(record),
-                                                      icon: Icon(
-                                                        Icons.person_remove_outlined,
-                                                        size: 18,
-                                                        color: colors.textSecondary,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      )
-                                      .toList(),
-                                ),
-                              ),
-                            ),
+                  child: PortalTable<ComplianceRecord>(
+                    caption: 'Compliance roster',
+                    columns: _columns(context, isAdmin),
+                    rows: records,
+                    loadingLabel: 'Loading compliance records',
+                    emptyIcon: Icons.fact_check_outlined,
+                    emptyMessage: 'No attendee records match this view',
+                    emptyDetail: 'Upload the registration and attendance files, or '
+                        'adjust the search and eligibility filters.',
+                    // Paged, not virtualized. A roster is worked through name by
+                    // name and then signed off, so "page 3 of 9" is the only
+                    // honest answer to how much review is left — a bottomless
+                    // scroll never gives one.
+                    rowsPerPage: 25,
+                    // Rows stack a name over an email over up to two lines of
+                    // eligibility reasons, which is what the review is for.
+                    density: TableDensity.comfortable,
+                    // Alphabetical by default: this is a list people are looked
+                    // up in, and the server's order is insertion order.
+                    initialSortColumn: 0,
+                    rowKey: (record) => record.id,
+                    rowSemanticLabel: (record) => record.fullName,
+                    // Admins can select ineligible rows too; approving them asks
+                    // for an explicit override confirmation.
+                    selectedKeys: isAdmin ? selected.cast<Object>() : null,
+                    isSelectable: (record) => !record.approved,
+                    onSelectChanged: (record, on) => setState(
+                      () => on ? selected.add(record.id) : selected.remove(record.id),
+                    ),
+                  ),
                 ),
               ),
             ],

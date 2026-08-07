@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../core/file_download.dart';
 import '../core/session.dart';
 import '../widgets/common.dart';
+import '../widgets/portal_table.dart';
 
 class AuditReportsPage extends StatefulWidget {
   const AuditReportsPage({super.key, required this.session});
@@ -13,7 +14,7 @@ class AuditReportsPage extends StatefulWidget {
   State<AuditReportsPage> createState() => _AuditReportsPageState();
 }
 
-class _AuditReportsPageState extends State<AuditReportsPage> {
+class _AuditReportsPageState extends State<AuditReportsPage> with LatestRequest {
   List<Map<String, dynamic>>? logs;
   Map<String, dynamic>? insights;
   List<Map<String, dynamic>> columns = [];
@@ -30,13 +31,17 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
   }
 
   Future<void> load() async {
+    // Retry can be pressed while the first attempt is still out; without the
+    // guard the two sets of results race and the log can end up older than the
+    // one it replaced.
+    final request = beginRequest();
     try {
       final results = await Future.wait([
         widget.session.api.get('/audit-logs?limit=300'),
         widget.session.api.get('/survey-insights'),
         widget.session.api.get('/reports/columns'),
       ]);
-      if (mounted) {
+      if (request.isCurrent) {
         setState(() {
           logs = (results[0] as List).cast<Map<String, dynamic>>();
           insights = results[1] as Map<String, dynamic>;
@@ -48,7 +53,7 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
         });
       }
     } catch (exception) {
-      if (mounted) _fail(exception);
+      if (request.isCurrent) _fail(exception);
     }
   }
 
@@ -82,6 +87,65 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
     }
   }
 
+  /// Reads the log's timestamp, which every column here is ordered against.
+  static DateTime? _timestamp(Map<String, dynamic> log) =>
+      DateTime.tryParse(log['created_at']?.toString() ?? '');
+
+  List<TableColumn<Map<String, dynamic>>> _columns() => [
+        TableColumn<Map<String, dynamic>>(
+          label: 'Timestamp',
+          width: 180,
+          // Sorted on the parsed instant, not the rendered string — "7/9/2026"
+          // sorts before "12/1/2025" as text.
+          sortValue: _timestamp,
+          cell: (context, log) {
+            final at = _timestamp(log);
+            return Text(at == null ? '—' : DateFormat.yMd().add_jm().format(at.toLocal()));
+          },
+        ),
+        TableColumn<Map<String, dynamic>>(
+          label: 'Action',
+          width: 230,
+          sortValue: (log) => log['action']?.toString(),
+          cell: (context, log) => StatusBadge(
+            (log['action'] as String).replaceAll('.', ' ').toUpperCase(),
+            tone: BadgeTone.info,
+          ),
+        ),
+        TableColumn<Map<String, dynamic>>(
+          label: 'Entity',
+          width: 170,
+          sortValue: (log) => log['entity_type']?.toString(),
+          cell: (context, log) => Text('${log['entity_type']} #${log['entity_id'] ?? '—'}'),
+        ),
+        TableColumn<Map<String, dynamic>>(
+          label: 'Event ID',
+          width: 110,
+          numeric: true,
+          sortValue: (log) => log['event_id'] as int?,
+          cell: (context, log) => Text('${log['event_id'] ?? '—'}'),
+        ),
+        TableColumn<Map<String, dynamic>>(
+          label: 'Actor ID',
+          width: 110,
+          numeric: true,
+          sortValue: (log) => log['actor_id'] as int?,
+          cell: (context, log) => Text('${log['actor_id'] ?? 'system'}'),
+        ),
+        TableColumn<Map<String, dynamic>>(
+          label: 'Details',
+          width: 330,
+          // The one column worth spending a wide screen on.
+          flex: 1,
+          sortValue: (log) => log['details'].toString(),
+          cell: (context, log) => Text(
+            log['details'].toString(),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ];
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -112,7 +176,9 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                   ),
                 ],
               ),
-              if (error != null) ...[
+              // Only when there is a table to sit above: a failed *load* is
+              // reported inside the table instead, where it comes with a Retry.
+              if (error != null && logs != null) ...[
                 const SizedBox(height: Space.xs + 2),
                 FormErrorText(error!),
               ],
@@ -236,46 +302,29 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
               const SizedBox(height: Space.sm + 2),
               Expanded(
                 child: Card(
-                  child: logs == null
-                      ? const LoadingPanel(label: 'Loading audit log')
-                      : logs!.isEmpty
-                          ? const EmptyState(
-                              icon: Icons.assessment_outlined,
-                              message: 'No audit log entries yet',
-                              detail: 'Material actions such as uploads, approvals, and certificate sends are recorded here.',
-                            )
-                          : SingleChildScrollView(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: DataTable(
-                              columns: const [
-                                DataColumn(label: Text('Timestamp')),
-                                DataColumn(label: Text('Action')),
-                                DataColumn(label: Text('Entity')),
-                                DataColumn(label: Text('Event ID')),
-                                DataColumn(label: Text('Actor ID')),
-                                DataColumn(label: Text('Details')),
-                              ],
-                              rows: logs!
-                                  .map(
-                                    (log) => DataRow(
-                                      cells: [
-                                        DataCell(Text(DateFormat.yMd().add_jm().format(DateTime.parse(log['created_at'] as String).toLocal()))),
-                                        DataCell(StatusBadge((log['action'] as String).replaceAll('.', ' ').toUpperCase(), tone: BadgeTone.info)),
-                                        DataCell(Text('${log['entity_type']} #${log['entity_id'] ?? '—'}')),
-                                        DataCell(Text('${log['event_id'] ?? '—'}')),
-                                        DataCell(Text('${log['actor_id'] ?? 'system'}')),
-                                        DataCell(ConstrainedBox(
-                                          constraints: const BoxConstraints(minWidth: 330, maxWidth: 460),
-                                          child: Text(log['details'].toString(), maxLines: 2, overflow: TextOverflow.ellipsis),
-                                        )),
-                                      ],
-                                    ),
-                                  )
-                                  .toList(),
-                            ),
-                          ),
-                        ),
+                  child: PortalTable<Map<String, dynamic>>(
+                    caption: 'Audit log',
+                    columns: _columns(),
+                    rows: logs,
+                    error: logs == null ? error : null,
+                    onRetry: load,
+                    loadingLabel: 'Loading audit log',
+                    emptyIcon: Icons.assessment_outlined,
+                    emptyMessage: 'No audit log entries yet',
+                    emptyDetail: 'Material actions such as uploads, approvals, and '
+                        'certificate sends are recorded here.',
+                    // Virtualized, not paged. This is a chronological stream
+                    // that gets scanned and scrolled rather than worked through
+                    // — chopping it into pages puts an arbitrary wall in the
+                    // middle of the thing being read. All 300 rows used to be
+                    // built eagerly; now only the visible ones are.
+                    paging: TablePaging.virtualized,
+                    // One line per entry, so more of the trail is in view.
+                    density: TableDensity.compact,
+                    // Newest first, which is what an audit trail is opened for.
+                    initialSortColumn: 0,
+                    initialSortAscending: false,
+                  ),
                 ),
               ),
             ],

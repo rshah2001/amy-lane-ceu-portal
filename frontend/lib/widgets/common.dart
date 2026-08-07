@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 // `intl` also exports a `TextDirection`, which shadows the `dart:ui` one that
@@ -10,6 +12,9 @@ import '../core/theme.dart';
 // Everything in the design system travels with the shared widgets, so a page
 // needs one import to get both `PageHeader` and the tokens it is built from.
 export '../core/theme.dart';
+// The stale-response guard is needed by every page that loads a list, which is
+// every page that already imports this file.
+export 'request_guard.dart';
 
 /// Page padding. Every page in the shell uses this, so the content column
 /// starts at the same inset no matter which page you navigated from.
@@ -399,6 +404,14 @@ class ErrorPanel extends StatelessWidget {
 /// "ClientException with SocketException:", so it is replaced wholesale rather
 /// than shown.
 String humanizeError(Object exception) {
+  if (exception is TimeoutException) {
+    // Deliberately not "try again": the client stopped waiting, it did not
+    // cancel the request, so a certificate send that timed out may well have
+    // gone out. Telling someone to press Send again would double-email an
+    // attendee. Reload first, then decide.
+    return 'The server took too long to respond. It may still be working on it — '
+        'reload the page to check before trying again.';
+  }
   if (exception is ApiException) {
     final message = exception.message.trim();
     return switch (exception.statusCode) {

@@ -46,6 +46,7 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
     businessLocation.dispose();
     name.dispose();
     email.dispose();
+    // One per free-text question, created in load().
     for (final controller in answers.values) {
       controller.dispose();
     }
@@ -72,6 +73,20 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
   Future<void> load() async {
     try {
       final result = await widget.api.get('/public/surveys/${widget.token}') as Map<String, dynamic>;
+      // Nothing below is worth doing for a page that has gone away — and the
+      // controllers built there would never be disposed, because dispose() has
+      // already run.
+      if (!mounted) return;
+      // Retry replaces the question list, so the controllers belonging to the
+      // old questions have to go with them. Overwriting the map instead left
+      // one live TextEditingController per free-text question, attached to
+      // nothing, on every attempt — and this is the page an attendee reloads on
+      // conference-centre wifi.
+      for (final controller in answers.values) {
+        controller.dispose();
+      }
+      answers.clear();
+      choiceAnswers.clear();
       for (final question in result['questions'] as List) {
         if (question['type'] == 'choice') {
           choiceAnswers[question['id'] as String] = null;
@@ -79,7 +94,7 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
           answers[question['id'] as String] = TextEditingController();
         }
       }
-      if (mounted) setState(() => survey = result);
+      setState(() => survey = result);
     } catch (exception) {
       if (mounted) _fail(exception);
     }

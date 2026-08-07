@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 import '../core/api_client.dart';
 import '../core/session.dart';
 import '../widgets/common.dart';
+import '../widgets/portal_table.dart';
 
 class UsersPage extends StatefulWidget {
   const UsersPage({super.key, required this.session});
@@ -13,7 +13,7 @@ class UsersPage extends StatefulWidget {
   State<UsersPage> createState() => _UsersPageState();
 }
 
-class _UsersPageState extends State<UsersPage> {
+class _UsersPageState extends State<UsersPage> with LatestRequest {
   List<Map<String, dynamic>>? users;
   String? error;
 
@@ -24,17 +24,24 @@ class _UsersPageState extends State<UsersPage> {
   }
 
   Future<void> load() async {
+    // Activating and deactivating both reload, and the menu can be worked
+    // faster than the round trip: without the guard the older response repaints
+    // the row as active again a moment after it was switched off.
+    final request = beginRequest();
     setState(() => error = null);
     try {
       final result = await widget.session.api.get('/users') as List;
-      if (mounted) setState(() => users = result.cast<Map<String, dynamic>>());
+      if (request.isCurrent) setState(() => users = result.cast<Map<String, dynamic>>());
     } catch (exception) {
-      if (mounted) {
-        final message = humanizeError(exception);
-        setState(() => error = message);
-        announceToScreenReader(context, message);
-      }
+      if (request.isCurrent) _fail(exception);
     }
+  }
+
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
   }
 
   Future<void> addUser() async {
@@ -61,12 +68,107 @@ class _UsersPageState extends State<UsersPage> {
     }
   }
 
+  List<TableColumn<Map<String, dynamic>>> _columns(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
+    final currentId = widget.session.user!.id;
+    return [
+      TableColumn<Map<String, dynamic>>(
+        label: 'Name',
+        width: 260,
+        flex: 2,
+        sortValue: (user) => user['full_name'] as String?,
+        cell: (context, user) => Row(
+          children: [
+            ExcludeSemantics(
+              child: CircleAvatar(
+                radius: 16,
+                backgroundColor: user['is_active'] == true
+                    ? colors.infoSurface
+                    : colors.neutralSurface,
+                child: Icon(
+                  user['role'] == 'admin' ? Icons.shield_outlined : Icons.person_outline,
+                  size: 18,
+                  // Was #98A2B3 at 2.58:1 — this icon is one of the marks of an
+                  // inactive account on the row.
+                  color: user['is_active'] == true ? colors.info : colors.textTertiary,
+                ),
+              ),
+            ),
+            const SizedBox(width: Space.xs),
+            Flexible(
+              child: Text(
+                user['full_name'] as String,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+      ),
+      TableColumn<Map<String, dynamic>>(
+        label: 'Email',
+        width: 260,
+        flex: 2,
+        sortValue: (user) => user['email'] as String?,
+        cell: (context, user) =>
+            Text(user['email'] as String, overflow: TextOverflow.ellipsis),
+      ),
+      TableColumn<Map<String, dynamic>>(
+        label: 'Role',
+        width: 150,
+        sortValue: (user) => user['role'] as String?,
+        cell: (context, user) => StatusBadge(
+          user['role'] == 'admin' ? 'ADMIN' : 'PRESENTER',
+          tone: user['role'] == 'admin' ? BadgeTone.info : BadgeTone.neutral,
+        ),
+      ),
+      TableColumn<Map<String, dynamic>>(
+        label: 'Status',
+        width: 140,
+        // Sorting puts the deactivated accounts together, which is the only
+        // reason anyone sorts this column.
+        sortValue: (user) => user['is_active'] as bool?,
+        cell: (context, user) => StatusBadge(
+          user['is_active'] == true ? 'ACTIVE' : 'INACTIVE',
+          tone: user['is_active'] == true ? BadgeTone.success : BadgeTone.danger,
+        ),
+      ),
+      TableColumn<Map<String, dynamic>>(
+        label: 'Added',
+        width: 170,
+        sortValue: (user) => DateTime.tryParse(user['created_at']?.toString() ?? ''),
+        cell: (context, user) {
+          final created = DateTime.tryParse(user['created_at']?.toString() ?? '');
+          return Text(created == null ? '—' : formatDate(created));
+        },
+      ),
+      TableColumn<Map<String, dynamic>>(
+        label: 'Actions',
+        width: 110,
+        cell: (context, user) {
+          // No self-service lockout: deactivating your own account would sign
+          // you out of the only page that could undo it.
+          if (user['id'] == currentId) return const SizedBox.shrink();
+          final active = user['is_active'] as bool;
+          return PopupMenuButton<String>(
+            tooltip: 'Manage ${user['full_name']}',
+            onSelected: (value) => setActive(user, value == 'activate'),
+            itemBuilder: (context) => [
+              if (active)
+                const PopupMenuItem(value: 'deactivate', child: Text('Deactivate'))
+              else
+                const PopupMenuItem(value: 'activate', child: Text('Activate')),
+            ],
+          );
+        },
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (error != null) return ErrorPanel(message: error!, onRetry: load);
-    if (users == null) return const LoadingPanel(label: 'Loading users');
-    final currentId = widget.session.user!.id;
-    return SingleChildScrollView(
+    return Padding(
       padding: pagePadding,
       child: Center(
         child: ConstrainedBox(
@@ -86,83 +188,31 @@ class _UsersPageState extends State<UsersPage> {
                 ],
               ),
               const SizedBox(height: Space.md + 2),
-              Card(
-                child: Column(
-                  children: [
-                    for (var i = 0; i < users!.length; i++) ...[
-                      if (i > 0) divider,
-                      _UserRow(
-                        user: users![i],
-                        isSelf: users![i]['id'] == currentId,
-                        onSetActive: (active) => setActive(users![i], active),
-                      ),
-                    ],
-                  ],
+              Expanded(
+                child: Card(
+                  child: PortalTable<Map<String, dynamic>>(
+                    caption: 'Portal accounts',
+                    columns: _columns(context),
+                    rows: users,
+                    error: error,
+                    onRetry: load,
+                    loadingLabel: 'Loading users',
+                    emptyIcon: Icons.group_outlined,
+                    emptyMessage: 'No accounts yet',
+                    emptyDetail: 'Add an administrator or presenter to get started.',
+                    // Paged. The account list is small today, but it only ever
+                    // grows, and one shape for every table beats a special case
+                    // that has to be revisited the first time it doesn't fit.
+                    rowsPerPage: 25,
+                    initialSortColumn: 0,
+                    rowKey: (user) => user['id'] as Object,
+                    rowSemanticLabel: (user) => user['full_name'] as String?,
+                  ),
                 ),
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _UserRow extends StatelessWidget {
-  const _UserRow({required this.user, required this.isSelf, required this.onSetActive});
-  final Map<String, dynamic> user;
-  final bool isSelf;
-  final ValueChanged<bool> onSetActive;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.portal;
-    final active = user['is_active'] as bool;
-    final isAdmin = user['role'] == 'admin';
-    final created = DateTime.tryParse(user['created_at']?.toString() ?? '');
-    return ListTile(
-      leading: ExcludeSemantics(
-        child: CircleAvatar(
-          backgroundColor: active ? colors.infoSurface : colors.neutralSurface,
-          child: Icon(
-            isAdmin ? Icons.shield_outlined : Icons.person_outline,
-            // Was #98A2B3 at 2.58:1 — this icon is the only mark of an
-            // inactive account on the row.
-            color: active ? colors.info : colors.textTertiary,
-          ),
-        ),
-      ),
-      title: Text(
-        user['full_name'] as String,
-        style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
-      ),
-      subtitle: Text(
-        created == null
-            ? user['email'] as String
-            : '${user['email']}  ·  added ${DateFormat.yMMMd().format(created)}',
-      ),
-      // Wrap, not Row: at large text scale two badges plus a menu button
-      // overflowed the trailing slot.
-      trailing: Wrap(
-        spacing: Space.xs,
-        runSpacing: Space.xxs,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          StatusBadge(isAdmin ? 'ADMIN' : 'PRESENTER', tone: isAdmin ? BadgeTone.info : BadgeTone.neutral),
-          StatusBadge(active ? 'ACTIVE' : 'INACTIVE', tone: active ? BadgeTone.success : BadgeTone.danger),
-          if (!isSelf)
-            PopupMenuButton<String>(
-              tooltip: 'Manage ${user['full_name']}',
-              onSelected: (value) => onSetActive(value == 'activate'),
-              itemBuilder: (context) => [
-                if (active)
-                  const PopupMenuItem(value: 'deactivate', child: Text('Deactivate'))
-                else
-                  const PopupMenuItem(value: 'activate', child: Text('Activate')),
-              ],
-            ),
-        ],
       ),
     );
   }
@@ -216,9 +266,15 @@ class _AddUserDialogState extends State<_AddUserDialog> {
       });
       if (mounted) Navigator.of(context).pop(true);
     } on ApiException catch (exception) {
+      // The server names the real problem here ("A user with that email
+      // already exists"), which no generic wording can. It only falls back to
+      // [humanizeError] when the failure arrived without a detail at all.
       if (mounted) {
-        setState(() => error = exception.message);
-        announceToScreenReader(context, exception.message);
+        final message = exception.message.trim().isEmpty
+            ? humanizeError(exception)
+            : exception.message;
+        setState(() => error = message);
+        announceToScreenReader(context, message);
       }
     } catch (exception) {
       if (mounted) {
