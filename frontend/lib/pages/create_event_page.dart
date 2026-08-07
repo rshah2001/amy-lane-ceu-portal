@@ -161,6 +161,24 @@ class _CreateEventPageState extends State<CreateEventPage> {
       announceToScreenReader(context, message);
       return;
     }
+    if (testMode == 'internal') {
+      // A wrong answer key is worse than an incomplete form: the event saves,
+      // the test runs, and attendees who answered correctly are failed.
+      final unanswered = [
+        for (var i = 0; i < testQuestions.length; i++)
+          if (!testQuestions[i].hasAnswer) i + 1,
+      ];
+      if (unanswered.isNotEmpty) {
+        final message = unanswered.length == 1
+            ? 'Question ${unanswered.first} has no correct answer marked. '
+                'Select the correct choice before saving.'
+            : 'Questions ${unanswered.join(', ')} have no correct answer marked. '
+                'Select the correct choice for each before saving.';
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+        return;
+      }
+    }
     setState(() {
       saving = true;
       error = null;
@@ -687,7 +705,9 @@ class _QuestionDraft {
     while (choices.length < 4) {
       choices.add(TextEditingController());
     }
-    if (correctIndex >= choices.length) correctIndex = 0;
+    // An existing question always has an answer; only guard the stored index
+    // against a choice list that has since shrunk.
+    if (correctIndex != null && correctIndex! >= choices.length) correctIndex = 0;
   }
 
   /// Original question id when editing, so existing test submissions keep
@@ -695,13 +715,24 @@ class _QuestionDraft {
   final String? id;
   final TextEditingController prompt;
   final List<TextEditingController> choices;
-  int correctIndex = 0;
+
+  /// Null until someone actually picks the answer.
+  ///
+  /// This used to default to 0, which is indistinguishable from deliberately
+  /// choosing the first option — so an author who filled in a question and
+  /// forgot the radio silently shipped "A" as the answer key. Every attendee
+  /// who answered correctly was then marked wrong, on a test that decides CEU
+  /// credit. Unanswered is now its own state and is refused at save.
+  int? correctIndex;
+
+  bool get hasAnswer => correctIndex != null;
 
   Map<String, dynamic> toJson(String fallbackId) => {
         'id': id ?? fallbackId,
         'prompt': prompt.text.trim(),
         'choices': [for (final choice in choices) choice.text.trim()],
-        'correct_index': correctIndex,
+        // Guarded by the save-time check; the ?? 0 only keeps the type honest.
+        'correct_index': correctIndex ?? 0,
       };
 
   void dispose() {
@@ -758,11 +789,14 @@ class _QuestionEditor extends StatelessWidget {
             const SizedBox(height: Space.xxs + 2),
             Align(
               alignment: Alignment.centerLeft,
+              // Flagged in place, while the author is looking at the question,
+              // rather than only at save. Nothing about an unmarked question
+              // looks wrong otherwise — the radios simply sit empty.
               child: Text(
-                'Select the correct answer',
+                draft.hasAnswer ? 'Select the correct answer' : 'Select the correct answer — none marked yet',
                 style: theme.textTheme.labelMedium?.copyWith(
-                  color: theme.portal.textSecondary,
-                  fontWeight: FontWeight.w400,
+                  color: draft.hasAnswer ? theme.portal.textSecondary : theme.portal.warning,
+                  fontWeight: draft.hasAnswer ? FontWeight.w400 : FontWeight.w600,
                 ),
               ),
             ),
