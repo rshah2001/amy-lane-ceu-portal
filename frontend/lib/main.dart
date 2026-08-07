@@ -139,6 +139,15 @@ GoRouter buildRouter(SessionController session) {
       }
       return null;
     },
+    // Without this, a mistyped or stale URL — a bookmarked event that has since
+    // been deleted, a link forwarded with a truncated path — drops the user on
+    // go_router's raw diagnostic page, which shows a Dart exception and offers
+    // no way back. Attendees reach this app through printed QR codes, so a
+    // wrong URL is a realistic arrival, not just a developer typo.
+    errorBuilder: (context, state) => _NotFoundPage(
+      location: state.uri.toString(),
+      signedIn: session.isAuthenticated,
+    ),
     routes: [
       GoRoute(path: '/', redirect: (context, state) => '/dashboard'),
       GoRoute(path: '/login', builder: (context, state) => LoginPage(session: session)),
@@ -370,5 +379,66 @@ class _EventScreenState extends State<EventScreen> {
       );
     }
     return const LoadingPanel(label: 'Loading event');
+  }
+}
+
+/// Shown for any URL the router doesn't recognise.
+///
+/// Deliberately does not say "you don't have permission" — the router can't
+/// tell a deleted event from a typo from a page this role can't see, and
+/// guessing wrong is worse than saying plainly that the page isn't there.
+/// Where it goes next depends on who is asking: a signed-in user gets the
+/// dashboard, while a visitor who scanned a bad QR code has no dashboard to
+/// go to and is pointed at sign-in instead.
+class _NotFoundPage extends StatelessWidget {
+  const _NotFoundPage({required this.location, required this.signedIn});
+
+  final String location;
+  final bool signedIn;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
+    return Scaffold(
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: maxFormWidth),
+          child: Padding(
+            padding: pagePadding,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ExcludeSemantics(
+                  child: Icon(Icons.explore_off_outlined, size: 48, color: colors.textTertiary),
+                ),
+                const SizedBox(height: Space.md),
+                Heading(child: Text('That page could not be found', style: theme.textTheme.headlineMedium)),
+                const SizedBox(height: Space.xs),
+                Text(
+                  signedIn
+                      ? 'The link may be out of date, or the item may have been removed.'
+                      : 'The link may be out of date. If you scanned a QR code at an event, '
+                          'ask the presenter to check it.',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: colors.textSecondary),
+                ),
+                const SizedBox(height: Space.sm),
+                SelectableText(
+                  location,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.labelSmall?.copyWith(color: colors.textTertiary),
+                ),
+                const SizedBox(height: Space.lg),
+                ElevatedButton(
+                  onPressed: () => context.go(signedIn ? '/dashboard' : '/login'),
+                  child: Text(signedIn ? 'Back to Dashboard' : 'Go to sign in'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

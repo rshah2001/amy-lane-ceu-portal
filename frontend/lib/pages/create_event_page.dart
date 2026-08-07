@@ -207,6 +207,69 @@ class _CreateEventPageState extends State<CreateEventPage> {
     }
   }
 
+  /// Nudge shown under the portal-access dropdown.
+  ///
+  /// The failure this exists to stop is quiet: the event saves fine, and only
+  /// weeks later does the presenter discover they can't sign in to upload
+  /// anything. So when the typed certificate name matches a real portal
+  /// account that hasn't been given access, offer it in one click; and when
+  /// nobody is assigned at all, say plainly who is left holding the upload.
+  List<Widget> _presenterAccessHint() {
+    if (assignedPresenterId != null) return const [];
+    final colors = Theme.of(context).portal;
+    final typed = presenter.text.trim().toLowerCase();
+    Map<String, dynamic>? match;
+    if (typed.isNotEmpty) {
+      for (final candidate in presenters) {
+        if ((candidate['full_name'] as String?)?.trim().toLowerCase() == typed) {
+          match = candidate;
+          break;
+        }
+      }
+    }
+    return [
+      const SizedBox(height: Space.xs),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(Space.sm),
+        decoration: BoxDecoration(
+          color: colors.warningSurface,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: colors.warning),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.info_outline, size: 18, color: colors.warning),
+            const SizedBox(width: Space.xs),
+            Expanded(
+              child: match == null
+                  ? Text(
+                      'Nobody can sign in to upload the sign-in sheet for this event. '
+                      'An administrator will have to upload it instead.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${match['full_name']} has a portal account but no access to this event.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: Space.xxs),
+                        TextButton(
+                          onPressed: () => setState(() => assignedPresenterId = match!['id'] as int),
+                          child: Text('Give ${match['full_name']} access'),
+                        ),
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -303,22 +366,32 @@ class _CreateEventPageState extends State<CreateEventPage> {
                           suggestion: 'Live Virtual',
                         ),
                         const SizedBox(height: 16),
+                        // These two fields both used to say "presenter" and sat
+                        // next to each other, which read as one question asked
+                        // twice. Admins filled the certificate name and left the
+                        // access dropdown on "Unassigned" — 23 of 24 live events
+                        // ended up with no presenter able to sign in. They are
+                        // now explicitly framed as two different questions.
+                        const Align(alignment: Alignment.centerLeft, child: SectionTitle('Who is teaching this event')),
+                        const SizedBox(height: Space.xs),
                         TextFormField(
                           controller: presenter,
                           decoration: const InputDecoration(
-                            labelText: 'Presenter name(s)',
-                            helperText: "For two presenters, separate with ' & ' — both appear on the certificate",
+                            labelText: 'Presenter name — printed on the certificate',
+                            helperText: "Exactly as it should appear on the certificate. For two presenters, separate with ' & '",
                           ),
+                          // Rebuild so the suggestion below can react as they type.
+                          onChanged: (_) => setState(() {}),
                         ),
                         const SizedBox(height: 16),
                         DropdownButtonFormField<int?>(
                           initialValue: assignedPresenterId,
                           decoration: const InputDecoration(
-                            labelText: 'Assign presenter (portal access)',
-                            helperText: 'This presenter can sign in and upload the attendance sheet for this event',
+                            labelText: 'Portal access — who can upload the sign-in sheet',
+                            helperText: 'A different question from the name above: this is the account that can sign in for this event',
                           ),
                           items: [
-                            const DropdownMenuItem<int?>(value: null, child: Text('Unassigned')),
+                            const DropdownMenuItem<int?>(value: null, child: Text('Nobody (admins upload it)')),
                             for (final p in presenters)
                               DropdownMenuItem<int?>(
                                 value: p['id'] as int,
@@ -327,6 +400,7 @@ class _CreateEventPageState extends State<CreateEventPage> {
                           ],
                           onChanged: (value) => setState(() => assignedPresenterId = value),
                         ),
+                        ..._presenterAccessHint(),
                         const SizedBox(height: 16),
                         DropdownButtonFormField<String>(
                           initialValue: eventType,
