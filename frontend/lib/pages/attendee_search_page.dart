@@ -79,7 +79,11 @@ class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
         });
       }
     } catch (exception) {
-      if (mounted && seq == _requestSeq) setState(() => error = exception.toString());
+      if (mounted && seq == _requestSeq) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     }
   }
 
@@ -121,7 +125,7 @@ class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const PageHeader(title: 'Attendee Search', subtitle: 'Find attendees across events, approvals, and issued certificates.'),
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final searchField = TextField(
@@ -151,7 +155,7 @@ class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
                     },
                   );
                   final searchButton = IconButton.filledTonal(
-                    tooltip: 'Search',
+                    tooltip: 'Search attendees',
                     onPressed: search,
                     icon: const Icon(Icons.search),
                   );
@@ -160,29 +164,29 @@ class _AttendeeSearchPageState extends State<AttendeeSearchPage> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         searchField,
-                        const SizedBox(height: 10),
-                        Row(children: [Expanded(child: eventFilter), const SizedBox(width: 10), searchButton]),
+                        const SizedBox(height: Space.xs + 2),
+                        Row(children: [Expanded(child: eventFilter), const SizedBox(width: Space.xs + 2), searchButton]),
                       ],
                     );
                   }
                   return Row(
                     children: [
                       Expanded(flex: 3, child: searchField),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: Space.xs + 2),
                       Expanded(flex: 2, child: eventFilter),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: Space.xs + 2),
                       searchButton,
                     ],
                   );
                 },
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               Expanded(
                 child: Card(
                   child: error != null
                       ? ErrorPanel(message: error!, onRetry: search)
                       : rows == null
-                          ? const LoadingPanel()
+                          ? const LoadingPanel(label: 'Searching attendees')
                           : rows!.isEmpty
                               ? EmptyState(
                                   icon: Icons.person_search_outlined,
@@ -217,8 +221,10 @@ class _GroupedResults extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: Space.xxs),
       itemCount: groups.length,
       separatorBuilder: (_, __) => divider,
       itemBuilder: (context, index) {
@@ -227,21 +233,31 @@ class _GroupedResults extends StatelessWidget {
           shape: const Border(),
           collapsedShape: const Border(),
           initiallyExpanded: groups.length == 1,
-          leading: const Icon(Icons.event_note_outlined, color: Color(0xFF245B85)),
-          title: Text(group.title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+          leading: ExcludeSemantics(
+            child: Icon(Icons.event_note_outlined, color: colors.info),
+          ),
+          title: Text(
+            group.title,
+            style: theme.textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+          ),
           subtitle: Text(
             group.date == null ? 'Date unknown' : DateFormat.yMMMd().format(group.date!),
-            style: const TextStyle(fontSize: 12, color: Color(0xFF667085)),
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: colors.textSecondary,
+              fontWeight: FontWeight.w400,
+            ),
           ),
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               StatusBadge('${group.rows.length} ATTENDEE${group.rows.length == 1 ? '' : 'S'}', tone: BadgeTone.info),
-              const SizedBox(width: 6),
-              const Icon(Icons.expand_more, size: 20, color: Color(0xFF667085)),
+              const SizedBox(width: Space.xxs + 2),
+              ExcludeSemantics(
+                child: Icon(Icons.expand_more, size: 20, color: colors.textSecondary),
+              ),
             ],
           ),
-          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+          childrenPadding: const EdgeInsets.fromLTRB(Space.md, 0, Space.md, Space.sm + 2),
           children: [
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -257,7 +273,14 @@ class _GroupedResults extends StatelessWidget {
                     .map(
                       (row) => DataRow(
                         cells: [
-                          DataCell(SizedBox(width: 190, child: Text(row['full_name'] as String, style: const TextStyle(fontWeight: FontWeight.w600)))),
+                          DataCell(ConstrainedBox(
+                            constraints: const BoxConstraints(minWidth: 190, maxWidth: 280),
+                            child: Text(
+                              row['full_name'] as String,
+                              style: theme.textTheme.bodyMedium
+                                  ?.copyWith(fontWeight: FontWeight.w600),
+                            ),
+                          )),
                           DataCell(Text(row['email'] as String? ?? '')),
                           DataCell(Text(row['company'] as String? ?? '')),
                           DataCell(StatusBadge(row['approved'] == true ? 'APPROVED' : row['eligible'] == true ? 'ELIGIBLE' : 'INELIGIBLE', tone: row['approved'] == true || row['eligible'] == true ? BadgeTone.success : BadgeTone.danger)),

@@ -29,7 +29,11 @@ class _UsersPageState extends State<UsersPage> {
       final result = await widget.session.api.get('/users') as List;
       if (mounted) setState(() => users = result.cast<Map<String, dynamic>>());
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     }
   }
 
@@ -52,7 +56,7 @@ class _UsersPageState extends State<UsersPage> {
       await load();
     } catch (exception) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(exception.toString())));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(humanizeError(exception))));
       }
     }
   }
@@ -60,13 +64,13 @@ class _UsersPageState extends State<UsersPage> {
   @override
   Widget build(BuildContext context) {
     if (error != null) return ErrorPanel(message: error!, onRetry: load);
-    if (users == null) return const LoadingPanel();
+    if (users == null) return const LoadingPanel(label: 'Loading users');
     final currentId = widget.session.user!.id;
     return SingleChildScrollView(
       padding: pagePadding,
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 900),
+          constraints: const BoxConstraints(maxWidth: maxContentWidth),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -81,7 +85,7 @@ class _UsersPageState extends State<UsersPage> {
                   ),
                 ],
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: Space.md + 2),
               Card(
                 child: Column(
                   children: [
@@ -112,32 +116,44 @@ class _UserRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     final active = user['is_active'] as bool;
     final isAdmin = user['role'] == 'admin';
     final created = DateTime.tryParse(user['created_at']?.toString() ?? '');
     return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: active ? const Color(0xFFE9F2FA) : const Color(0xFFF0F2F5),
-        child: Icon(
-          isAdmin ? Icons.shield_outlined : Icons.person_outline,
-          color: active ? const Color(0xFF245B85) : const Color(0xFF98A2B3),
+      leading: ExcludeSemantics(
+        child: CircleAvatar(
+          backgroundColor: active ? colors.infoSurface : colors.neutralSurface,
+          child: Icon(
+            isAdmin ? Icons.shield_outlined : Icons.person_outline,
+            // Was #98A2B3 at 2.58:1 — this icon is the only mark of an
+            // inactive account on the row.
+            color: active ? colors.info : colors.textTertiary,
+          ),
         ),
       ),
-      title: Text(user['full_name'] as String, style: const TextStyle(fontWeight: FontWeight.w600)),
+      title: Text(
+        user['full_name'] as String,
+        style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+      ),
       subtitle: Text(
         created == null
             ? user['email'] as String
             : '${user['email']}  ·  added ${DateFormat.yMMMd().format(created)}',
       ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
+      // Wrap, not Row: at large text scale two badges plus a menu button
+      // overflowed the trailing slot.
+      trailing: Wrap(
+        spacing: Space.xs,
+        runSpacing: Space.xxs,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           StatusBadge(isAdmin ? 'ADMIN' : 'PRESENTER', tone: isAdmin ? BadgeTone.info : BadgeTone.neutral),
-          const SizedBox(width: 8),
           StatusBadge(active ? 'ACTIVE' : 'INACTIVE', tone: active ? BadgeTone.success : BadgeTone.danger),
           if (!isSelf)
             PopupMenuButton<String>(
-              tooltip: 'Manage',
+              tooltip: 'Manage ${user['full_name']}',
               onSelected: (value) => onSetActive(value == 'activate'),
               itemBuilder: (context) => [
                 if (active)
@@ -165,6 +181,9 @@ class _AddUserDialogState extends State<_AddUserDialog> {
   final fullName = TextEditingController();
   final email = TextEditingController();
   final password = TextEditingController();
+  final nameField = (key: GlobalKey<FormFieldState<String>>(), focus: FocusNode(debugLabel: 'full name'));
+  final emailField = (key: GlobalKey<FormFieldState<String>>(), focus: FocusNode(debugLabel: 'email'));
+  final passwordField = (key: GlobalKey<FormFieldState<String>>(), focus: FocusNode(debugLabel: 'temporary password'));
   String role = 'presenter';
   bool saving = false;
   String? error;
@@ -174,11 +193,16 @@ class _AddUserDialogState extends State<_AddUserDialog> {
     fullName.dispose();
     email.dispose();
     password.dispose();
+    nameField.focus.dispose();
+    emailField.focus.dispose();
+    passwordField.focus.dispose();
     super.dispose();
   }
 
   Future<void> submit() async {
-    if (!formKey.currentState!.validate()) return;
+    if (!validateAndFocusFirstError(context, formKey, [nameField, emailField, passwordField])) {
+      return;
+    }
     setState(() {
       saving = true;
       error = null;
@@ -192,9 +216,16 @@ class _AddUserDialogState extends State<_AddUserDialog> {
       });
       if (mounted) Navigator.of(context).pop(true);
     } on ApiException catch (exception) {
-      if (mounted) setState(() => error = exception.message);
+      if (mounted) {
+        setState(() => error = exception.message);
+        announceToScreenReader(context, exception.message);
+      }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     } finally {
       if (mounted) setState(() => saving = false);
     }
@@ -213,18 +244,22 @@ class _AddUserDialogState extends State<_AddUserDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               TextFormField(
+                key: nameField.key,
+                focusNode: nameField.focus,
                 controller: fullName,
                 decoration: const InputDecoration(labelText: 'Full name'),
                 validator: (value) => value == null || value.trim().length < 2 ? 'Enter a name' : null,
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               TextFormField(
+                key: emailField.key,
+                focusNode: emailField.focus,
                 controller: email,
                 keyboardType: TextInputType.emailAddress,
                 decoration: const InputDecoration(labelText: 'Email'),
                 validator: emailValidator,
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               DropdownButtonFormField<String>(
                 initialValue: role,
                 decoration: const InputDecoration(labelText: 'Role'),
@@ -234,8 +269,10 @@ class _AddUserDialogState extends State<_AddUserDialog> {
                 ],
                 onChanged: (value) => setState(() => role = value!),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               TextFormField(
+                key: passwordField.key,
+                focusNode: passwordField.focus,
                 controller: password,
                 obscureText: true,
                 decoration: const InputDecoration(
@@ -246,8 +283,8 @@ class _AddUserDialogState extends State<_AddUserDialog> {
                     value == null || value.length < 8 ? 'At least 8 characters' : null,
               ),
               if (error != null) ...[
-                const SizedBox(height: 14),
-                Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                const SizedBox(height: Space.sm + 2),
+                FormErrorText(error!),
               ],
             ],
           ),

@@ -3,7 +3,6 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/api_client.dart';
-import '../core/theme.dart';
 import '../widgets/common.dart';
 import 'public_survey_page.dart';
 import 'public_test_page.dart';
@@ -29,6 +28,14 @@ class _CheckinPageState extends State<CheckinPage> {
   final formKey = GlobalKey<FormState>();
   final name = TextEditingController();
   final email = TextEditingController();
+  final nameField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'full name'),
+  );
+  final emailField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'email address'),
+  );
   Map<String, dynamic>? event;
   Map<String, dynamic> nextSteps = {};
   // Two separate failures, because they need opposite treatment: a failed
@@ -53,6 +60,8 @@ class _CheckinPageState extends State<CheckinPage> {
   void dispose() {
     name.dispose();
     email.dispose();
+    nameField.focus.dispose();
+    emailField.focus.dispose();
     super.dispose();
   }
 
@@ -68,12 +77,16 @@ class _CheckinPageState extends State<CheckinPage> {
         });
       }
     } catch (exception) {
-      if (mounted) setState(() => loadError = humanizeError(exception));
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => loadError = message);
+        announceToScreenReader(context, message);
+      }
     }
   }
 
   Future<void> submit() async {
-    if (!formKey.currentState!.validate()) return;
+    if (!validateAndFocusFirstError(context, formKey, [nameField, emailField])) return;
     setState(() {
       saving = true;
       submitError = null;
@@ -90,7 +103,11 @@ class _CheckinPageState extends State<CheckinPage> {
         });
       }
     } catch (exception) {
-      if (mounted) setState(() => submitError = humanizeError(exception));
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => submitError = message);
+        announceToScreenReader(context, message);
+      }
     } finally {
       if (mounted) setState(() => saving = false);
     }
@@ -101,7 +118,7 @@ class _CheckinPageState extends State<CheckinPage> {
   List<Widget> _nextStepButtons() {
     final buttons = <Widget>[];
     void addButton(String label, IconData icon, VoidCallback onPressed) {
-      buttons.add(const SizedBox(height: 14));
+      buttons.add(const SizedBox(height: Space.sm + 2));
       buttons.add(ElevatedButton.icon(onPressed: onPressed, icon: Icon(icon), label: Text(label)));
     }
 
@@ -144,6 +161,8 @@ class _CheckinPageState extends State<CheckinPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     return Scaffold(
       appBar: AppBar(
         backgroundColor: navy,
@@ -154,21 +173,31 @@ class _CheckinPageState extends State<CheckinPage> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560),
+            constraints: const BoxConstraints(maxWidth: maxPublicWidth),
             child: loadError != null
                 ? ErrorPanel(message: loadError!, onRetry: load)
                 : event == null
-                    ? const LoadingPanel()
+                    ? const LoadingPanel(label: 'Loading the check-in page')
                     : submitted
                         ? Card(
                             child: Padding(
-                              padding: const EdgeInsets.all(40),
-                              child: Column(
+                              padding: const EdgeInsets.all(Space.xxxl - 8),
+                              child: Semantics(
+                                liveRegion: true,
+                                container: true,
+                                child: Column(
                                 children: [
-                                  const Icon(Icons.verified, color: Color(0xFF248A52), size: 52),
-                                  const SizedBox(height: 16),
-                                  const Text("You're checked in", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
-                                  const SizedBox(height: 8),
+                                  ExcludeSemantics(
+                                    child: Icon(Icons.verified, color: colors.success, size: 52),
+                                  ),
+                                  const SizedBox(height: Space.md),
+                                  Heading(
+                                    child: Text(
+                                      "You're checked in",
+                                      style: theme.textTheme.headlineMedium,
+                                    ),
+                                  ),
+                                  const SizedBox(height: Space.xs),
                                   Text(
                                     nextSteps.isEmpty
                                         ? 'Your attendance has been recorded. Remember to complete the post-test to earn your certificate.'
@@ -177,28 +206,41 @@ class _CheckinPageState extends State<CheckinPage> {
                                   ),
                                   ..._nextStepButtons(),
                                 ],
+                                ),
                               ),
                             ),
                           )
                         : Card(
                             child: Padding(
-                              padding: const EdgeInsets.all(26),
+                              padding: const EdgeInsets.all(Space.xl),
                               child: Form(
                                 key: formKey,
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.stretch,
                                   children: [
-                                    Text(event!['event_title'] as String, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
-                                    const SizedBox(height: 5),
+                                    Heading(
+                                      child: Text(
+                                        event!['event_title'] as String,
+                                        style: theme.textTheme.headlineMedium,
+                                      ),
+                                    ),
+                                    const SizedBox(height: Space.xxs + 1),
                                     Text(
                                       '${DateFormat.yMMMMd().format(DateTime.parse(event!['event_date'] as String))}'
                                       '${event!['location'] != null ? ' • ${event!['location']}' : ''}',
-                                      style: const TextStyle(color: Color(0xFF667085)),
+                                      style: theme.textTheme.bodyMedium
+                                          ?.copyWith(color: colors.textSecondary),
                                     ),
-                                    const SizedBox(height: 20),
-                                    const Text('Confirm your attendance for this event.', style: TextStyle(color: Color(0xFF667085))),
-                                    const SizedBox(height: 16),
+                                    const SizedBox(height: Space.lg),
+                                    Text(
+                                      'Confirm your attendance for this event.',
+                                      style: theme.textTheme.bodyMedium
+                                          ?.copyWith(color: colors.textSecondary),
+                                    ),
+                                    const SizedBox(height: Space.md),
                                     TextFormField(
+                                      key: nameField.key,
+                                      focusNode: nameField.focus,
                                       controller: name,
                                       autofillHints: const [AutofillHints.name],
                                       textCapitalization: TextCapitalization.words,
@@ -206,21 +248,23 @@ class _CheckinPageState extends State<CheckinPage> {
                                       decoration: const InputDecoration(labelText: 'Full name'),
                                       validator: (v) => v == null || v.trim().length < 2 ? 'Enter your name' : null,
                                     ),
-                                    const SizedBox(height: 14),
+                                    const SizedBox(height: Space.sm + 2),
                                     TextFormField(
+                                      key: emailField.key,
+                                      focusNode: emailField.focus,
                                       controller: email,
                                       keyboardType: TextInputType.emailAddress,
                                       autofillHints: const [AutofillHints.email],
                                       textInputAction: TextInputAction.done,
                                       onFieldSubmitted: (_) => submit(),
                                       decoration: const InputDecoration(labelText: 'Email address'),
-                                      validator: (v) => v == null || !v.contains('@') ? 'Enter a valid email' : null,
+                                      validator: emailValidator,
                                     ),
                                     if (submitError != null) ...[
-                                      const SizedBox(height: 12),
-                                      Text(submitError!, style: const TextStyle(color: Color(0xFFB42318))),
+                                      const SizedBox(height: Space.sm),
+                                      FormErrorText(submitError!),
                                     ],
-                                    const SizedBox(height: 22),
+                                    const SizedBox(height: Space.xl - 2),
                                     ElevatedButton.icon(
                                       onPressed: saving ? null : submit,
                                       icon: const Icon(Icons.how_to_reg),

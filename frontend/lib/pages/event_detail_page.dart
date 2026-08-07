@@ -29,7 +29,7 @@ class EventDetailPage extends StatelessWidget {
       final bytes = await session.api.download('/events/${event.id}/survey-qr');
       downloadBytes(bytes, '${event.title}-survey-qr.png', 'image/png');
     } catch (exception) {
-      messenger.showSnackBar(SnackBar(content: Text('Survey QR download failed: $exception')));
+      messenger.showSnackBar(SnackBar(content: Text('Survey QR download failed. ${humanizeError(exception)}')));
     }
   }
 
@@ -39,7 +39,7 @@ class EventDetailPage extends StatelessWidget {
       final bytes = await session.api.download('/events/${event.id}/test-qr');
       downloadBytes(bytes, '${event.title}-post-test-qr.png', 'image/png');
     } catch (exception) {
-      messenger.showSnackBar(SnackBar(content: Text('Post-test QR download failed: $exception')));
+      messenger.showSnackBar(SnackBar(content: Text('Post-test QR download failed. ${humanizeError(exception)}')));
     }
   }
 
@@ -54,13 +54,14 @@ class EventDetailPage extends StatelessWidget {
       final bytes = await session.api.download('/events/${event.id}/qr-sheet');
       downloadBytes(bytes, '${event.title}-qr-sheet.pdf', 'application/pdf');
     } catch (exception) {
-      messenger.showSnackBar(SnackBar(content: Text('QR sheet download failed: $exception')));
+      messenger.showSnackBar(SnackBar(content: Text('QR sheet download failed. ${humanizeError(exception)}')));
     }
   }
 
   // Deleting an event permanently removes its uploads, attendee records, and
   // certificates, so the dialog requires typing DELETE before proceeding.
   Future<void> deleteEvent(BuildContext context) async {
+    final theme = Theme.of(context);
     final messenger = ScaffoldMessenger.of(context);
     final controller = TextEditingController();
     final confirmed = await showDialog<bool>(
@@ -74,14 +75,14 @@ class EventDetailPage extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   'This permanently removes the event with all of its uploads, '
                   'attendance records, test and survey results, and issued '
                   'certificates. Certificate verification links stop working. '
                   'This cannot be undone.',
-                  style: TextStyle(color: Color(0xFFB42318)),
+                  style: theme.textTheme.bodyMedium?.copyWith(color: theme.portal.danger),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: Space.sm + 2),
                 TextField(
                   controller: controller,
                   autofocus: true,
@@ -94,7 +95,10 @@ class EventDetailPage extends StatelessWidget {
           actions: [
             TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFB42318), foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: theme.portal.danger,
+                foregroundColor: Colors.white,
+              ),
               onPressed: controller.text.trim() == 'DELETE' ? () => Navigator.pop(dialogContext, true) : null,
               child: const Text('Delete event'),
             ),
@@ -108,7 +112,7 @@ class EventDetailPage extends StatelessWidget {
       messenger.showSnackBar(SnackBar(content: Text('"${event.title}" was deleted.')));
       onNavigate('back');
     } catch (exception) {
-      messenger.showSnackBar(SnackBar(content: Text('Delete failed: $exception')));
+      messenger.showSnackBar(SnackBar(content: Text('Delete failed. ${humanizeError(exception)}')));
     }
   }
 
@@ -152,7 +156,7 @@ class EventDetailPage extends StatelessWidget {
         content: Text('Sent ${result['sent']} invite(s). Skipped $skipped (no valid email), $failed failed.'),
       ));
     } catch (exception) {
-      messenger.showSnackBar(SnackBar(content: Text('Distribution failed: $exception')));
+      messenger.showSnackBar(SnackBar(content: Text('Distribution failed. ${humanizeError(exception)}')));
     }
   }
 
@@ -191,7 +195,7 @@ class EventDetailPage extends StatelessWidget {
       padding: pagePadding,
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1100),
+          constraints: const BoxConstraints(maxWidth: maxContentWidth),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -207,7 +211,7 @@ class EventDetailPage extends StatelessWidget {
                     ),
                     OutlinedButton.icon(
                       onPressed: () => deleteEvent(context),
-                      style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFB42318)),
+                      style: OutlinedButton.styleFrom(foregroundColor: Theme.of(context).portal.danger),
                       icon: const Icon(Icons.delete_outline, size: 18),
                       label: const Text('Delete'),
                     ),
@@ -255,7 +259,7 @@ class EventDetailPage extends StatelessWidget {
                         runSpacing: 10,
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          const Text('Participant links', style: TextStyle(fontWeight: FontWeight.w700)),
+                          const SectionTitle('Participant links'),
                           Tooltip(
                             message: 'One printable page with the check-in, post-test, and survey QR codes — drop it into the slide deck',
                             child: ElevatedButton.icon(
@@ -317,8 +321,8 @@ class EventDetailPage extends StatelessWidget {
                 _QuestionsCard(questions: event.testQuestions),
               ],
               const SizedBox(height: 24),
-              Text('Workflow', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
-              const SizedBox(height: 12),
+              const SectionTitle('Workflow'),
+              const SizedBox(height: Space.sm),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final width = constraints.maxWidth < 700 ? constraints.maxWidth : (constraints.maxWidth - 24) / 3;
@@ -374,21 +378,43 @@ class _Detail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 240,
-      child: Row(
-        children: [
-          Icon(icon, color: Colors.blueGrey),
-          const SizedBox(width: 10),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: const TextStyle(fontSize: 12, color: Color(0xFF667085))),
-              const SizedBox(height: 2),
-              Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
-            ],
-          ),
-        ],
+    final theme = Theme.of(context);
+    return ConstrainedBox(
+      // Min-width, not fixed: at large text scale the label and value need room
+      // to grow. The inner Column is Expanded because without it the Row had no
+      // flexible child and overflowed horizontally outright — not a clip, a
+      // RenderFlex error painted over the content.
+      constraints: const BoxConstraints(minWidth: 240, maxWidth: 320),
+      child: Semantics(
+        container: true,
+        label: '$label: $value',
+        excludeSemantics: true,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: theme.portal.textSecondary),
+            const SizedBox(width: Space.xs + 2),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: theme.portal.textSecondary,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    value,
+                    style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -413,20 +439,33 @@ class _WorkflowCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return SizedBox(
       width: width,
       child: Card(
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(Space.lg),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, size: 30, color: Theme.of(context).colorScheme.primary),
-              const SizedBox(height: 16),
-              Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-              const SizedBox(height: 8),
-              SizedBox(height: 60, child: Text(text, style: const TextStyle(color: Color(0xFF667085), height: 1.4))),
-              const SizedBox(height: 14),
+              ExcludeSemantics(
+                child: Icon(icon, size: 30, color: theme.colorScheme.primary),
+              ),
+              const SizedBox(height: Space.md),
+              SectionTitle(title, style: theme.textTheme.titleSmall),
+              const SizedBox(height: Space.xs),
+              // Min-height, not fixed: the cards already sit in a Wrap, so
+              // uneven heights are harmless — whereas a hard 60px cap showed one
+              // line of a three-line explanation at 200% text scale, and this is
+              // the copy that tells a presenter what "Upload sign-in sheet" means.
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 60),
+                child: Text(
+                  text,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: theme.portal.textSecondary),
+                ),
+              ),
+              const SizedBox(height: Space.sm + 2),
               SizedBox(width: double.infinity, child: OutlinedButton(onPressed: onPressed, child: Text(button))),
             ],
           ),
@@ -443,23 +482,27 @@ class _LinkRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: Space.sm, vertical: Space.xxs + 2),
       decoration: BoxDecoration(
-        color: const Color(0xFFF4F6F8),
-        borderRadius: BorderRadius.circular(8),
+        color: theme.portal.surfaceSubtle,
+        borderRadius: BorderRadius.circular(Radii.md),
       ),
       child: Row(
         children: [
-          SizedBox(
-            width: 140,
-            child: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF667085))),
+          ConstrainedBox(
+            constraints: const BoxConstraints(minWidth: 140, maxWidth: 200),
+            child: Text(
+              label,
+              style: theme.textTheme.labelMedium?.copyWith(color: theme.portal.textSecondary),
+            ),
           ),
           Expanded(
-            child: SelectableText(url, maxLines: 1, style: const TextStyle(fontSize: 13)),
+            child: SelectableText(url, maxLines: 1, style: theme.textTheme.bodySmall),
           ),
           IconButton(
-            tooltip: 'Copy link',
+            tooltip: 'Copy $label',
             icon: const Icon(Icons.copy_outlined, size: 18),
             onPressed: () async {
               await Clipboard.setData(ClipboardData(text: url));
@@ -469,7 +512,7 @@ class _LinkRow extends StatelessWidget {
             },
           ),
           IconButton(
-            tooltip: 'Open in new tab',
+            tooltip: 'Open $label in a new tab',
             icon: const Icon(Icons.open_in_new, size: 18),
             onPressed: () => launchUrl(Uri.parse(url), webOnlyWindowName: '_blank'),
           ),
@@ -485,32 +528,57 @@ class _QuestionsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     return Card(
       child: ExpansionTile(
         shape: const Border(),
-        title: Text('Post-test questions (${questions.length})', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
-        subtitle: const Text('Review what attendees will be asked. Correct answers are marked.',
-            style: TextStyle(fontSize: 12, color: Color(0xFF667085))),
+        title: Text(
+          'Post-test questions (${questions.length})',
+          style: theme.textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        subtitle: Text(
+          'Review what attendees will be asked. Correct answers are marked.',
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: colors.textSecondary,
+            fontWeight: FontWeight.w400,
+          ),
+        ),
         childrenPadding: const EdgeInsets.fromLTRB(22, 0, 22, 18),
         expandedCrossAxisAlignment: CrossAxisAlignment.start,
         children: [
           for (var i = 0; i < questions.length; i++) ...[
-            if (i > 0) const SizedBox(height: 14),
-            Text('${i + 1}. ${questions[i]['prompt']}', style: const TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 4),
+            if (i > 0) const SizedBox(height: Space.sm + 2),
+            Text(
+              '${i + 1}. ${questions[i]['prompt']}',
+              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: Space.xxs),
             for (var c = 0; c < (questions[i]['choices'] as List).length; c++)
               Padding(
-                padding: const EdgeInsets.only(left: 16, top: 2),
-                child: Row(
-                  children: [
-                    Icon(
-                      c == questions[i]['correct_index'] ? Icons.check_circle : Icons.radio_button_unchecked,
-                      size: 16,
-                      color: c == questions[i]['correct_index'] ? const Color(0xFF12805C) : const Color(0xFF98A2B3),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text((questions[i]['choices'] as List)[c].toString())),
-                  ],
+                padding: const EdgeInsets.only(left: Space.md, top: 2),
+                child: Semantics(
+                  // The tick is the only thing marking the right answer, so it
+                  // needs to survive being read aloud.
+                  label: c == questions[i]['correct_index'] ? 'Correct answer' : 'Answer option',
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ExcludeSemantics(
+                        child: Icon(
+                          c == questions[i]['correct_index']
+                              ? Icons.check_circle
+                              : Icons.radio_button_unchecked,
+                          size: 16,
+                          color: c == questions[i]['correct_index']
+                              ? colors.success
+                              : colors.textTertiary,
+                        ),
+                      ),
+                      const SizedBox(width: Space.xs),
+                      Expanded(child: Text((questions[i]['choices'] as List)[c].toString())),
+                    ],
+                  ),
                 ),
               ),
           ],
@@ -530,6 +598,8 @@ class _SummaryStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     return FutureBuilder<dynamic>(
       future: session.api.get('/events/$eventId/summary'),
       builder: (context, snapshot) {
@@ -537,17 +607,24 @@ class _SummaryStrip extends StatelessWidget {
           return Card(
             child: Padding(
               padding: const EdgeInsets.all(22),
-              child: Row(
-                children: [
-                  const Icon(Icons.error_outline, color: Color(0xFFB42318), size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Event summary could not be loaded: ${snapshot.error}',
-                      style: const TextStyle(fontSize: 13, color: Color(0xFF667085)),
+              child: Semantics(
+                liveRegion: true,
+                container: true,
+                child: Row(
+                  children: [
+                    ExcludeSemantics(
+                      child: Icon(Icons.error_outline, color: colors.danger, size: 20),
                     ),
-                  ),
-                ],
+                    const SizedBox(width: Space.xs + 2),
+                    Expanded(
+                      child: Text(
+                        'Event summary could not be loaded. '
+                        '${humanizeError(snapshot.error!)}',
+                        style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           );
@@ -582,11 +659,16 @@ class _SummaryStrip extends StatelessWidget {
                     Tooltip(
                       message: 'Open compliance review',
                       child: InkWell(
-                        borderRadius: BorderRadius.circular(6),
+                        borderRadius: BorderRadius.circular(Radii.sm),
                         onTap: onOpenCompliance,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          child: _SummaryFigure(value: item.$2, label: item.$1),
+                        child: MinTapTarget(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: Space.xs,
+                              vertical: Space.xxs,
+                            ),
+                            child: _SummaryFigure(value: item.$2, label: item.$1),
+                          ),
                         ),
                       ),
                     )
@@ -608,13 +690,25 @@ class _SummaryFigure extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Color(0xFF17324D))),
-        const SizedBox(height: 2),
-        Text(label, style: const TextStyle(fontSize: 12, color: Color(0xFF667085))),
-      ],
+    final theme = Theme.of(context);
+    return Semantics(
+      container: true,
+      label: '$label: $value',
+      excludeSemantics: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(value, style: theme.textTheme.titleLarge?.copyWith(color: navy)),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.portal.textSecondary,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../core/api_client.dart';
-import '../core/theme.dart';
 import '../widgets/common.dart';
 
 class PublicSurveyPage extends StatefulWidget {
@@ -30,9 +29,37 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
   Map<String, dynamic>? survey;
   final answers = <String, TextEditingController>{};
   final choiceAnswers = <String, String?>{};
+  final nameField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'full name'),
+  );
+  final emailField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'email address'),
+  );
   String? error;
   bool submitted = false;
   bool saving = false;
+
+  @override
+  void dispose() {
+    businessLocation.dispose();
+    name.dispose();
+    email.dispose();
+    for (final controller in answers.values) {
+      controller.dispose();
+    }
+    nameField.focus.dispose();
+    emailField.focus.dispose();
+    super.dispose();
+  }
+
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
+  }
 
   @override
   void initState() {
@@ -54,12 +81,12 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
       }
       if (mounted) setState(() => survey = result);
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
   }
 
   Future<void> submit() async {
-    if (!formKey.currentState!.validate()) return;
+    if (!validateAndFocusFirstError(context, formKey, [nameField, emailField])) return;
     // Questions are optional — only send what was actually written, but ask
     // for at least one answer so an entirely blank survey isn't recorded.
     final filledAnswers = {
@@ -69,7 +96,9 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
         if (entry.value != null) entry.key: entry.value!,
     };
     if (filledAnswers.isEmpty) {
-      setState(() => error = 'Please answer at least one question.');
+      const message = 'Please answer at least one question.';
+      setState(() => error = message);
+      announceToScreenReader(context, message);
       return;
     }
     setState(() {
@@ -87,7 +116,7 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
       });
       if (mounted) setState(() => submitted = true);
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => saving = false);
     }
@@ -95,6 +124,8 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     return Scaffold(
       appBar: AppBar(
         backgroundColor: navy,
@@ -105,49 +136,65 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 720),
+            constraints: const BoxConstraints(maxWidth: maxPublicWidth),
             child: error != null && survey == null
                 ? ErrorPanel(message: error!, onRetry: load)
                 : survey == null
-                    ? const LoadingPanel()
+                    ? const LoadingPanel(label: 'Loading the feedback survey')
                     : submitted
-                        ? const Card(
+                        ? Card(
                             child: Padding(
-                              padding: EdgeInsets.all(40),
-                              child: Column(
-                                children: [
-                                  Icon(Icons.check_circle, color: Color(0xFF248A52), size: 52),
-                                  SizedBox(height: 16),
-                                  Text('Thank you', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700)),
-                                  SizedBox(height: 8),
-                                  Text('Your feedback has been recorded.'),
-                                ],
+                              padding: const EdgeInsets.all(Space.xxxl - 8),
+                              child: Semantics(
+                                liveRegion: true,
+                                container: true,
+                                child: Column(
+                                  children: [
+                                    ExcludeSemantics(
+                                      child: Icon(Icons.check_circle, color: colors.success, size: 52),
+                                    ),
+                                    const SizedBox(height: Space.md),
+                                    Heading(
+                                      child: Text('Thank you', style: theme.textTheme.headlineLarge),
+                                    ),
+                                    const SizedBox(height: Space.xs),
+                                    const Text('Your feedback has been recorded.'),
+                                  ],
+                                ),
                               ),
                             ),
                           )
                         : Card(
                             child: Padding(
-                              padding: const EdgeInsets.all(26),
+                              padding: const EdgeInsets.all(Space.xl),
                               child: Form(
                                 key: formKey,
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.stretch,
                                   children: [
-                                    Text(survey!['event_title'] as String, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
-                                    const SizedBox(height: 5),
+                                    Heading(
+                                      child: Text(
+                                        survey!['event_title'] as String,
+                                        style: theme.textTheme.headlineMedium,
+                                      ),
+                                    ),
+                                    const SizedBox(height: Space.xxs + 1),
                                     Text(
                                       '${DateFormat.yMMMMd().format(DateTime.parse(survey!['event_date'] as String))} • ${survey!['presenter_name'] ?? 'CEU Training'}',
-                                      style: const TextStyle(color: Color(0xFF667085)),
+                                      style: theme.textTheme.bodyMedium
+                                          ?.copyWith(color: colors.textSecondary),
                                     ),
-                                    const SizedBox(height: 24),
+                                    const SizedBox(height: Space.xl),
                                     TextFormField(
                                       controller: businessLocation,
                                       textCapitalization: TextCapitalization.words,
                                       textInputAction: TextInputAction.next,
                                       decoration: const InputDecoration(labelText: 'Business Name / Location (optional)'),
                                     ),
-                                    const SizedBox(height: 14),
+                                    const SizedBox(height: Space.sm + 2),
                                     TextFormField(
+                                      key: nameField.key,
+                                      focusNode: nameField.focus,
                                       controller: name,
                                       autofillHints: const [AutofillHints.name],
                                       textCapitalization: TextCapitalization.words,
@@ -160,8 +207,10 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
                                         return text.isEmpty || text.length >= 2 ? null : 'Enter your name';
                                       },
                                     ),
-                                    const SizedBox(height: 14),
+                                    const SizedBox(height: Space.sm + 2),
                                     TextFormField(
+                                      key: emailField.key,
+                                      focusNode: emailField.focus,
                                       controller: email,
                                       keyboardType: TextInputType.emailAddress,
                                       autofillHints: const [AutofillHints.email],
@@ -169,13 +218,14 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
                                       decoration: const InputDecoration(labelText: 'Email address (optional)'),
                                       validator: optionalEmailValidator,
                                     ),
-                                    const SizedBox(height: 18),
-                                    const Text(
+                                    const SizedBox(height: Space.md + 2),
+                                    Text(
                                       'Answer as many questions as you like — every question is optional.',
-                                      style: TextStyle(fontSize: 13, color: Color(0xFF667085)),
+                                      style: theme.textTheme.bodySmall
+                                          ?.copyWith(color: colors.textSecondary),
                                     ),
                                     for (final question in survey!['questions'] as List) ...[
-                                      const SizedBox(height: 18),
+                                      const SizedBox(height: Space.md + 2),
                                       if (question['type'] == 'choice')
                                         InputDecorator(
                                           decoration: InputDecoration(
@@ -190,16 +240,11 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
                                             child: Column(
                                               children: [
                                                 for (final option in (question['options'] as List?) ?? const [])
-                                                  InkWell(
-                                                    onTap: () => setState(
-                                                      () => choiceAnswers[question['id'] as String] = option.toString(),
-                                                    ),
-                                                    child: Row(
-                                                      children: [
-                                                        Radio<String>(value: option.toString()),
-                                                        Expanded(child: Text(option.toString())),
-                                                      ],
-                                                    ),
+                                                  RadioListTile<String>(
+                                                    value: option.toString(),
+                                                    title: Text(option.toString()),
+                                                    contentPadding: EdgeInsets.zero,
+                                                    dense: true,
                                                   ),
                                               ],
                                             ),
@@ -214,10 +259,10 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
                                         ),
                                     ],
                                     if (error != null) ...[
-                                      const SizedBox(height: 12),
-                                      Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                                      const SizedBox(height: Space.sm),
+                                      FormErrorText(error!),
                                     ],
-                                    const SizedBox(height: 24),
+                                    const SizedBox(height: Space.xl),
                                     ElevatedButton.icon(
                                       onPressed: saving ? null : submit,
                                       icon: const Icon(Icons.send_outlined),

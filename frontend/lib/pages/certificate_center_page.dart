@@ -38,6 +38,15 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
     loadEvents();
   }
 
+  /// Shows a failure and speaks it — see the note on the same helper in
+  /// compliance_page.dart.
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
+  }
+
   Future<void> loadEvents() async {
     try {
       final result = await widget.session.api.get('/events') as List;
@@ -58,7 +67,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       });
       if (event != null) await loadRecords();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
   }
 
@@ -74,7 +83,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
         setState(() => records = result.map((item) => ComplianceRecord.fromJson(item as Map<String, dynamic>)).toList());
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
   }
 
@@ -103,7 +112,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
         const SnackBar(content: Text('Preview downloaded — check your Downloads folder.')),
       );
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => workingId = null);
     }
@@ -140,6 +149,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       ),
     );
     if (confirmed != true || !mounted) return;
+    final theme = Theme.of(context);
     setState(() {
       bulkWorking = true;
       error = null;
@@ -169,8 +179,14 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                   const SizedBox(height: 12),
                   for (final line in details)
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Text('• $line', style: const TextStyle(fontSize: 12, color: Color(0xFFB42318))),
+                      padding: const EdgeInsets.only(bottom: Space.xxs),
+                      child: Text(
+                        '• $line',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: theme.portal.danger,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
                     ),
                 ],
               ],
@@ -183,7 +199,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       );
       await loadRecords();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => bulkWorking = false);
     }
@@ -233,7 +249,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       }
       await loadEvents();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => uploadingTemplate = false);
     }
@@ -245,7 +261,7 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       await widget.session.api.post(path);
       await loadRecords();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => workingId = null);
     }
@@ -255,9 +271,18 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
   // bypassing the eligibility rules (audited on the backend).
   Future<void> issueManually() async {
     if (event == null) return;
+    final theme = Theme.of(context);
     final formKey = GlobalKey<FormState>();
     final nameController = TextEditingController();
     final emailController = TextEditingController();
+    final nameField = (
+      key: GlobalKey<FormFieldState<String>>(),
+      focus: FocusNode(debugLabel: 'recipient name'),
+    );
+    final emailField = (
+      key: GlobalKey<FormFieldState<String>>(),
+      focus: FocusNode(debugLabel: 'recipient email'),
+    );
     var sendNow = true;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -275,23 +300,27 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                   Text(
                     'For "${event!.title}". The recipient does not need to meet the '
                     'eligibility requirements — the manual issue is recorded in the audit log.',
-                    style: const TextStyle(fontSize: 13, color: Color(0xFF667085)),
+                    style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.textSecondary),
                   ),
                   const SizedBox(height: 14),
                   TextFormField(
+                    key: nameField.key,
+                    focusNode: nameField.focus,
                     controller: nameController,
                     autofocus: true,
                     decoration: const InputDecoration(labelText: 'Full name'),
                     validator: (v) => v == null || v.trim().length < 2 ? 'Enter the recipient name' : null,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: Space.sm),
                   TextFormField(
+                    key: emailField.key,
+                    focusNode: emailField.focus,
                     controller: emailController,
                     keyboardType: TextInputType.emailAddress,
                     decoration: const InputDecoration(labelText: 'Email address'),
                     validator: emailValidator,
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Space.xxs + 2),
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
@@ -307,7 +336,9 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
-                if (formKey.currentState!.validate()) Navigator.pop(context, true);
+                if (validateAndFocusFirstError(context, formKey, [nameField, emailField])) {
+                  Navigator.pop(context, true);
+                }
               },
               child: const Text('Issue certificate'),
             ),
@@ -315,6 +346,8 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
         ),
       ),
     );
+    nameField.focus.dispose();
+    emailField.focus.dispose();
     if (confirmed != true || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     setState(() => error = null);
@@ -331,12 +364,13 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
       ));
       await loadRecords();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final visibleRecords = records?.where((record) => record.approved || record.eligible).toList();
     return Padding(
       padding: pagePadding,
@@ -359,34 +393,24 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                         : const Icon(Icons.send_outlined),
                     label: Text(bulkWorking ? 'Working...' : 'Generate & send all approved'),
                   ),
-                  PopupMenuButton<String>(
+                  ActionMenu(
+                    label: uploadingTemplate ? 'Uploading...' : 'More',
+                    icon: uploadingTemplate
+                        ? const SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.more_horiz),
                     enabled: event != null && !uploadingTemplate && !bulkWorking,
-                    onSelected: (value) => switch (value) {
-                      'issue' => issueManually(),
-                      'template' => uploadTemplate(),
-                      _ => Future<void>.value(),
-                    },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(value: 'issue', child: Text('Issue certificate manually')),
-                      PopupMenuItem(value: 'template', child: Text('Upload certificate template')),
+                    actions: [
+                      MenuAction('Issue certificate manually', issueManually),
+                      MenuAction('Upload certificate template', uploadTemplate),
                     ],
-                    child: IgnorePointer(
-                      child: OutlinedButton.icon(
-                        onPressed: () {},
-                        icon: uploadingTemplate
-                            ? const SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.more_horiz),
-                        label: Text(uploadingTemplate ? 'Uploading...' : 'More'),
-                      ),
-                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               if (events == null)
                 error != null
                     ? InlineAlert(message: error!, onRetry: loadEvents, onDismiss: () => setState(() => error = null))
-                    : const LoadingPanel()
+                    : const LoadingPanel(label: 'Loading events')
               else if (events!.isEmpty)
                 const Expanded(
                   child: EmptyState(
@@ -411,14 +435,14 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                   },
                 ),
                 if (error != null) ...[
-                  const SizedBox(height: 10),
+                  const SizedBox(height: Space.xs + 2),
                   InlineAlert(message: error!, onRetry: loadRecords, onDismiss: () => setState(() => error = null)),
                 ],
-                const SizedBox(height: 14),
+                const SizedBox(height: Space.sm + 2),
                 Expanded(
                   child: Card(
                     child: visibleRecords == null
-                        ? const LoadingPanel()
+                        ? const LoadingPanel(label: 'Loading certificate records')
                         : visibleRecords.isEmpty
                             ? const EmptyState(
                                 icon: Icons.workspace_premium_outlined,
@@ -440,7 +464,14 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                                     .map(
                                       (record) => DataRow(
                                         cells: [
-                                          DataCell(SizedBox(width: 230, child: Text(record.fullName, style: const TextStyle(fontWeight: FontWeight.w600)))),
+                                          DataCell(ConstrainedBox(
+                                            constraints: const BoxConstraints(minWidth: 230, maxWidth: 320),
+                                            child: Text(
+                                              record.fullName,
+                                              style: theme.textTheme.bodyMedium
+                                                  ?.copyWith(fontWeight: FontWeight.w600),
+                                            ),
+                                          )),
                                           DataCell(StatusBadge(record.approved ? 'APPROVED' : 'AWAITING APPROVAL', tone: record.approved ? BadgeTone.success : BadgeTone.warning)),
                                           DataCell(Text(record.certificateNumber ?? 'Not generated')),
                                           DataCell(Text(record.certificateSentAt == null ? 'Not sent' : formatDateTime(record.certificateSentAt!))),

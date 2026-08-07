@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/session.dart';
-import 'core/theme.dart';
 import 'models/models.dart';
 import 'pages/attendee_search_page.dart';
 import 'pages/audit_reports_page.dart';
@@ -24,9 +24,31 @@ import 'pages/uploads_page.dart';
 import 'pages/users_page.dart';
 import 'pages/verification_page.dart';
 import 'widgets/app_shell.dart';
+import 'widgets/common.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Build the accessibility tree from the first frame, unconditionally.
+  //
+  // This is a CanvasKit build, so Flutter paints into a WebGL canvas that a
+  // screen reader sees as one empty graphic. Flutter only starts emitting DOM
+  // semantics once something turns them on — normally an off-screen "Enable
+  // accessibility" button the user has to find and activate first. Until then
+  // VoiceOver and NVDA get a blank page.
+  //
+  // That placeholder button is not a reasonable ask of anyone, and it is an
+  // impossible one for an attendee who has just scanned a QR code on their
+  // phone to reach the public check-in, post-test, survey, or certificate
+  // verification page — those are the screens NMEDA's own audience lands on.
+  //
+  // Tradeoff: the semantics tree is now built and maintained for every user
+  // rather than on demand, which costs a DOM mirror of the widget tree and some
+  // per-frame work. On a form-and-table app of this size that is not a
+  // measurable interaction cost, and it is the only way the public pages are
+  // usable at all with a screen reader.
+  SemanticsBinding.instance.ensureSemantics();
+
   final session = SessionController();
   await session.restore();
   runApp(CeuPortalApp(session: session));
@@ -319,19 +341,34 @@ class _EventScreenState extends State<EventScreen> {
   Widget build(BuildContext context) {
     if (event != null) return widget.builder(context, event!);
     if (error != null) {
+      final theme = Theme.of(context);
       return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('This event could not be loaded.'),
-            const SizedBox(height: 6),
-            Text('$error', style: const TextStyle(fontSize: 12, color: Color(0xFF667085))),
-            const SizedBox(height: 14),
-            OutlinedButton(onPressed: () => context.go('/events'), child: const Text('Back to Events')),
-          ],
+        child: Semantics(
+          liveRegion: true,
+          container: true,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('This event could not be loaded.'),
+              const SizedBox(height: Space.xxs + 2),
+              Text(
+                humanizeError(error!),
+                textAlign: TextAlign.center,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: theme.portal.textSecondary,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
+              const SizedBox(height: Space.sm + 2),
+              OutlinedButton(
+                onPressed: () => context.go('/events'),
+                child: const Text('Back to Events'),
+              ),
+            ],
+          ),
         ),
       );
     }
-    return const Center(child: CircularProgressIndicator());
+    return const LoadingPanel(label: 'Loading event');
   }
 }

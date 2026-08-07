@@ -58,8 +58,15 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
       final result = await widget.session.api.get('/survey-responses${_query()}') as List;
       if (mounted) setState(() => responses = result.cast<Map<String, dynamic>>());
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
+  }
+
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
   }
 
   Future<void> export() async {
@@ -68,7 +75,7 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
       final bytes = await widget.session.api.download('/survey-responses.csv${_query()}');
       downloadBytes(bytes, 'survey_responses.csv', 'text/csv');
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => exporting = false);
     }
@@ -95,7 +102,7 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final searchField = TextField(
@@ -116,20 +123,20 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
                     },
                   );
                   if (constraints.maxWidth < 760) {
-                    return Column(children: [eventDropdown, const SizedBox(height: 10), searchField]);
+                    return Column(children: [eventDropdown, const SizedBox(height: Space.xs + 2), searchField]);
                   }
-                  return Row(children: [Expanded(child: eventDropdown), const SizedBox(width: 12), Expanded(child: searchField)]);
+                  return Row(children: [Expanded(child: eventDropdown), const SizedBox(width: Space.sm), Expanded(child: searchField)]);
                 },
               ),
               if (error != null) ...[
-                const SizedBox(height: 10),
-                Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                const SizedBox(height: Space.xs + 2),
+                FormErrorText(error!),
               ],
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               Expanded(
                 child: Card(
                   child: responses == null
-                      ? const LoadingPanel()
+                      ? const LoadingPanel(label: 'Loading survey responses')
                       : responses!.isEmpty
                           ? const EmptyState(
                               icon: Icons.rate_review_outlined,
@@ -147,7 +154,7 @@ class _SurveyResponsesPageState extends State<SurveyResponsesPage> {
                                 submissionCounts[key] = (submissionCounts[key] ?? 0) + 1;
                               }
                               return ListView.separated(
-                                padding: const EdgeInsets.all(8),
+                                padding: const EdgeInsets.all(Space.xs),
                                 itemCount: responses!.length,
                                 separatorBuilder: (_, __) => divider,
                                 itemBuilder: (context, index) => _ResponseTile(
@@ -184,6 +191,8 @@ class _ResponseTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     final answers = (response['answers'] as Map?)?.cast<String, dynamic>() ?? {};
     final completed = DateTime.tryParse(response['completed_at']?.toString() ?? '')?.toLocal();
     final businessLocation = (response['business_location'] as String?)?.trim() ?? '';
@@ -195,11 +204,11 @@ class _ResponseTile extends StatelessWidget {
           Flexible(
             child: Text(
               response['full_name'] as String? ?? 'Anonymous',
-              style: const TextStyle(fontWeight: FontWeight.w600),
+              style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
             ),
           ),
           if (submissionCount > 1) ...[
-            const SizedBox(width: 8),
+            const SizedBox(width: Space.xs),
             StatusBadge('$submissionCount SUBMISSIONS', tone: BadgeTone.warning),
           ],
         ],
@@ -208,22 +217,34 @@ class _ResponseTile extends StatelessWidget {
         '${response['event_title']}  ·  ${response['email'] ?? 'no email'}'
         '${businessLocation.isEmpty ? '' : '  ·  $businessLocation'}'
         '${completed == null ? '' : '  ·  ${DateFormat.yMMMd().format(completed)} · ${DateFormat.jm().format(completed)}'}',
-        style: const TextStyle(fontSize: 12, color: Color(0xFF667085)),
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: colors.textSecondary,
+          fontWeight: FontWeight.w400,
+        ),
       ),
-      childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 14),
+      childrenPadding: const EdgeInsets.fromLTRB(Space.md + 2, 0, Space.md + 2, Space.sm + 2),
       // Both are needed: without expandedAlignment the answers Column
       // shrink-wraps and floats to the center of the tile.
       expandedAlignment: Alignment.topLeft,
       expandedCrossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (answers.isEmpty)
-          const Text('No answer text recorded.', style: TextStyle(color: Color(0xFF667085)))
+          Text(
+            'No answer text recorded.',
+            style: theme.textTheme.bodyMedium?.copyWith(color: colors.textSecondary),
+          )
         else
           for (final entry in answers.entries) ...[
-            Text(entry.key, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF667085))),
+            Text(
+              entry.key,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: colors.textSecondary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
             const SizedBox(height: 2),
             Text('${entry.value}'),
-            const SizedBox(height: 10),
+            const SizedBox(height: Space.xs + 2),
           ],
       ],
     );

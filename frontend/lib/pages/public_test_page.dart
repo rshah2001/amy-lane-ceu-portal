@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../core/api_client.dart';
-import '../core/theme.dart';
 import '../widgets/common.dart';
 
 class PublicTestPage extends StatefulWidget {
@@ -26,6 +25,16 @@ class _PublicTestPageState extends State<PublicTestPage> {
   final formKey = GlobalKey<FormState>();
   final name = TextEditingController();
   final email = TextEditingController();
+  // Keyed + focusable so a failed submit can land the caret on the field that
+  // actually failed, and say why.
+  final nameField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'full name'),
+  );
+  final emailField = (
+    key: GlobalKey<FormFieldState<String>>(),
+    focus: FocusNode(debugLabel: 'email address'),
+  );
   Map<String, dynamic>? test;
   final selected = <String, int>{};
   String? error;
@@ -40,20 +49,38 @@ class _PublicTestPageState extends State<PublicTestPage> {
     load();
   }
 
+  @override
+  void dispose() {
+    name.dispose();
+    email.dispose();
+    nameField.focus.dispose();
+    emailField.focus.dispose();
+    super.dispose();
+  }
+
   Future<void> load() async {
     try {
       final data = await widget.api.get('/public/tests/${widget.token}') as Map<String, dynamic>;
       if (mounted) setState(() => test = data);
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
   }
 
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
+  }
+
   Future<void> submit() async {
-    if (!formKey.currentState!.validate()) return;
+    if (!validateAndFocusFirstError(context, formKey, [nameField, emailField])) return;
     final questions = test!['questions'] as List;
     if (selected.length < questions.length) {
-      setState(() => error = 'Please answer every question before submitting.');
+      const message = 'Please answer every question before submitting.';
+      setState(() => error = message);
+      announceToScreenReader(context, message);
       return;
     }
     setState(() {
@@ -68,7 +95,7 @@ class _PublicTestPageState extends State<PublicTestPage> {
       }) as Map<String, dynamic>;
       if (mounted) setState(() => result = response);
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => saving = false);
     }
@@ -96,11 +123,11 @@ class _PublicTestPageState extends State<PublicTestPage> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 720),
+            constraints: const BoxConstraints(maxWidth: maxPublicWidth),
             child: error != null && test == null
                 ? ErrorPanel(message: error!, onRetry: load)
                 : test == null
-                    ? const LoadingPanel()
+                    ? const LoadingPanel(label: 'Loading the post-test')
                     : result != null
                         ? _ResultCard(result: result!, onTryAgain: _retake)
                         : _buildForm(),
@@ -111,25 +138,37 @@ class _PublicTestPageState extends State<PublicTestPage> {
   }
 
   Widget _buildForm() {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     final questions = test!['questions'] as List;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(26),
+        padding: const EdgeInsets.all(Space.xl),
         child: Form(
           key: formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(test!['event_title'] as String, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
-              const SizedBox(height: 5),
+              Heading(
+                child: Text(
+                  test!['event_title'] as String,
+                  style: theme.textTheme.headlineMedium,
+                ),
+              ),
+              const SizedBox(height: Space.xxs + 1),
               Text(
                 '${DateFormat.yMMMMd().format(DateTime.parse(test!['event_date'] as String))} • ${test!['presenter_name'] ?? 'CEU Training'}',
-                style: const TextStyle(color: Color(0xFF667085)),
+                style: theme.textTheme.bodyMedium?.copyWith(color: colors.textSecondary),
               ),
-              const SizedBox(height: 6),
-              const Text('A score of 80% or higher is required to earn your certificate.', style: TextStyle(fontSize: 13, color: Color(0xFF667085))),
-              const SizedBox(height: 22),
+              const SizedBox(height: Space.xxs + 2),
+              Text(
+                'A score of 80% or higher is required to earn your certificate.',
+                style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
+              ),
+              const SizedBox(height: Space.xl - 2),
               TextFormField(
+                key: nameField.key,
+                focusNode: nameField.focus,
                 controller: name,
                 autofillHints: const [AutofillHints.name],
                 textCapitalization: TextCapitalization.words,
@@ -137,8 +176,10 @@ class _PublicTestPageState extends State<PublicTestPage> {
                 decoration: const InputDecoration(labelText: 'Full name'),
                 validator: (value) => value == null || value.trim().length < 2 ? 'Enter your name' : null,
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               TextFormField(
+                key: emailField.key,
+                focusNode: emailField.focus,
                 controller: email,
                 keyboardType: TextInputType.emailAddress,
                 autofillHints: const [AutofillHints.email],
@@ -147,8 +188,11 @@ class _PublicTestPageState extends State<PublicTestPage> {
                 validator: emailValidator,
               ),
               for (var i = 0; i < questions.length; i++) ...[
-                const SizedBox(height: 22),
-                Text('${i + 1}. ${questions[i]['prompt']}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: Space.xl - 2),
+                Text(
+                  '${i + 1}. ${questions[i]['prompt']}',
+                  style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                ),
                 RadioGroup<int>(
                   groupValue: selected[questions[i]['id']],
                   onChanged: (value) => setState(() => selected[questions[i]['id'] as String] = value!),
@@ -166,10 +210,10 @@ class _PublicTestPageState extends State<PublicTestPage> {
                 ),
               ],
               if (error != null) ...[
-                const SizedBox(height: 12),
-                Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                const SizedBox(height: Space.sm),
+                FormErrorText(error!),
               ],
-              const SizedBox(height: 24),
+              const SizedBox(height: Space.xl),
               ElevatedButton.icon(
                 onPressed: saving ? null : submit,
                 icon: const Icon(Icons.check_circle_outline),
@@ -192,39 +236,64 @@ class _ResultCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     final passed = result['passed'] as bool;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(40),
-        child: Column(
-          children: [
-            Icon(passed ? Icons.verified : Icons.error_outline, color: passed ? const Color(0xFF248A52) : const Color(0xFFB42318), size: 56),
-            const SizedBox(height: 16),
-            Text('${result['score']}%', style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 4),
-            Text('${result['correct']} of ${result['total']} correct', style: const TextStyle(color: Color(0xFF667085))),
-            const SizedBox(height: 12),
-            Text(
-              passed
-                  ? 'You passed. Your certificate will be issued after the organizer reviews the session.'
-                  : 'A score of 80% is required. You can retake the test right away — your latest attempt is the one that counts.',
-              textAlign: TextAlign.center,
-            ),
-            if (!passed) ...[
-              const SizedBox(height: 20),
-              ElevatedButton.icon(
-                onPressed: onTryAgain,
-                icon: const Icon(Icons.replay),
-                label: const Text('Try again'),
+        padding: const EdgeInsets.all(Space.xxxl - 8),
+        // The result is the whole point of the page and it appears without a
+        // navigation, so it is announced rather than silently swapped in.
+        child: Semantics(
+          liveRegion: true,
+          container: true,
+          child: Column(
+            children: [
+              ExcludeSemantics(
+                child: Icon(
+                  passed ? Icons.verified : Icons.error_outline,
+                  color: passed ? colors.success : colors.danger,
+                  size: 56,
+                ),
               ),
-              const SizedBox(height: 12),
-              const Text(
-                'Having trouble? Contact the event organizer for help.',
+              const SizedBox(height: Space.md),
+              Heading(
+                child: Text(
+                  '${result['score']}%',
+                  style: theme.textTheme.displayMedium,
+                  semanticsLabel: passed
+                      ? 'Passed with ${result['score']} percent'
+                      : 'Did not pass. Scored ${result['score']} percent',
+                ),
+              ),
+              const SizedBox(height: Space.xxs),
+              Text(
+                '${result['correct']} of ${result['total']} correct',
+                style: theme.textTheme.bodyMedium?.copyWith(color: colors.textSecondary),
+              ),
+              const SizedBox(height: Space.sm),
+              Text(
+                passed
+                    ? 'You passed. Your certificate will be issued after the organizer reviews the session.'
+                    : 'A score of 80% is required. You can retake the test right away — your latest attempt is the one that counts.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: Color(0xFF667085)),
               ),
+              if (!passed) ...[
+                const SizedBox(height: Space.lg),
+                ElevatedButton.icon(
+                  onPressed: onTryAgain,
+                  icon: const Icon(Icons.replay),
+                  label: const Text('Try again'),
+                ),
+                const SizedBox(height: Space.sm),
+                Text(
+                  'Having trouble? Contact the event organizer for help.',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );

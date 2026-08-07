@@ -49,6 +49,16 @@ class _UploadsPageState extends State<UploadsPage> {
     load();
   }
 
+  /// Shows a failure and speaks it. Uploading is the presenter's only task in
+  /// the portal, so a silent failure leaves them with no idea whether the
+  /// sign-in sheet landed.
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
+  }
+
   Future<void> load() async {
     try {
       final result = await widget.session.api.get('/events/${widget.event.id}/uploads') as List;
@@ -59,7 +69,7 @@ class _UploadsPageState extends State<UploadsPage> {
         });
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
   }
 
@@ -89,7 +99,7 @@ class _UploadsPageState extends State<UploadsPage> {
       await load();
       if (mounted) _showUploadFeedback(type, response);
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => uploadingType = null);
     }
@@ -100,6 +110,7 @@ class _UploadsPageState extends State<UploadsPage> {
   /// File-level parser notices (row 0) — "no attendee names could be read", a
   /// sheet-format mismatch, OCR caveats — are spelled out instead of counted.
   void _showUploadFeedback(String type, Map<String, dynamic> response) {
+    final colors = Theme.of(context).portal;
     final rowCount = response['row_count'] ?? 0;
     final parseErrors = ((response['parse_errors'] as List?) ?? const []).cast<Map<String, dynamic>>();
     final fileNotes = [
@@ -117,8 +128,8 @@ class _UploadsPageState extends State<UploadsPage> {
         context: context,
         builder: (dialogContext) => AlertDialog(
           icon: noAttendees
-              ? const Icon(Icons.warning_amber_outlined, color: Color(0xFFB54708), size: 42)
-              : const Icon(Icons.check_circle_outline, color: Color(0xFF248A52), size: 42),
+              ? Icon(Icons.warning_amber_outlined, color: colors.warning, size: 42)
+              : Icon(Icons.check_circle_outline, color: colors.success, size: 42),
           title: Text(noAttendees ? 'Sign-in sheet needs attention' : 'Sign-in sheet received'),
           content: Text(
             noAttendees
@@ -174,8 +185,11 @@ class _UploadsPageState extends State<UploadsPage> {
               // Row 0 marks a file-level notice, not a specific row.
               final prefix = entry['row'] == 0 ? '' : 'Row ${entry['row']}: ';
               return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Text('$prefix${entry['message']}', style: const TextStyle(fontSize: 13)),
+                padding: const EdgeInsets.symmetric(vertical: Space.xs),
+                child: Text(
+                  '$prefix${entry['message']}',
+                  style: Theme.of(dialogContext).textTheme.bodySmall,
+                ),
               );
             },
           ),
@@ -195,7 +209,7 @@ class _UploadsPageState extends State<UploadsPage> {
       child: DropdownButtonFormField<String>(
         initialValue: sheetFormat,
         isDense: true,
-        style: const TextStyle(fontSize: 13, color: Color(0xFF344054)),
+        style: Theme.of(context).textTheme.bodySmall,
         decoration: const InputDecoration(
           labelText: 'What kind of sheet is this? (optional)',
           border: OutlineInputBorder(),
@@ -222,7 +236,7 @@ class _UploadsPageState extends State<UploadsPage> {
       final bytes = await widget.session.api.download('/events/${widget.event.id}/uploads/${upload['id']}/download');
       downloadBytes(bytes, filename, _contentTypeFor(filename));
     } catch (exception) {
-      messenger.showSnackBar(SnackBar(content: Text('Could not open $filename: $exception')));
+      messenger.showSnackBar(SnackBar(content: Text('Could not open $filename. ${humanizeError(exception)}')));
     }
   }
 
@@ -236,12 +250,13 @@ class _UploadsPageState extends State<UploadsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final isAdmin = widget.session.user!.isAdmin;
     return SingleChildScrollView(
       padding: pagePadding,
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1100),
+          constraints: const BoxConstraints(maxWidth: maxContentWidth),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -250,21 +265,24 @@ class _UploadsPageState extends State<UploadsPage> {
                 subtitle: widget.event.title,
                 actions: [OutlinedButton.icon(onPressed: load, icon: const Icon(Icons.refresh), label: const Text('Refresh'))],
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: Space.md + 2),
               Card(
                 child: Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(Space.md),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.info_outline, color: Color(0xFF245B85)),
-                      const SizedBox(width: 10),
+                      ExcludeSemantics(
+                        child: Icon(Icons.info_outline, color: theme.portal.info),
+                      ),
+                      const SizedBox(width: Space.xs + 2),
                       Expanded(
                         child: Text(
                           isAdmin
                               ? 'Upload CSV, XLSX, PDF, DOCX, or image scans. Image OCR is best-effort, so review extracted rows before approving certificates.'
                               : "Upload the signed attendance sheet from your session. A photo (JPG/PNG), scan (PDF), or spreadsheet all work. iPhone tip: HEIC photos aren't supported — share the photo as JPEG or scan to PDF from the Notes app.",
-                          style: TextStyle(color: Colors.blueGrey.shade700),
+                          style: theme.textTheme.bodyMedium
+                              ?.copyWith(color: theme.portal.textSecondary),
                         ),
                       ),
                     ],
@@ -272,10 +290,10 @@ class _UploadsPageState extends State<UploadsPage> {
                 ),
               ),
               if (error != null) ...[
-                const SizedBox(height: 12),
+                const SizedBox(height: Space.sm),
                 InlineAlert(message: error!, onDismiss: () => setState(() => error = null)),
               ],
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               for (final type in types) ...[
                 _UploadRow(
                   title: type.$2,
@@ -288,7 +306,7 @@ class _UploadsPageState extends State<UploadsPage> {
                   onShowErrors: _showParseErrors,
                   formatSelector: type.$1 == 'attendance' ? _formatSelector() : null,
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: Space.sm),
               ],
             ],
           ),
@@ -343,6 +361,8 @@ class _UploadRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     final errors = ((upload?['parse_errors'] as List?) ?? const []).cast<Map<String, dynamic>>();
     return Card(
       child: Padding(
@@ -350,72 +370,85 @@ class _UploadRow extends StatelessWidget {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final info = Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(color: const Color(0xFFE9F2FA), borderRadius: BorderRadius.circular(6)),
-                  child: Icon(icon, color: const Color(0xFF245B85)),
+                ExcludeSemantics(
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: colors.infoSurface,
+                      borderRadius: BorderRadius.circular(Radii.sm),
+                    ),
+                    child: Icon(icon, color: colors.info),
+                  ),
                 ),
-                const SizedBox(width: 14),
+                const SizedBox(width: Space.sm + 2),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+                      SectionTitle(title, style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700)),
                       const SizedBox(height: 3),
-                      Text(description, style: const TextStyle(color: Color(0xFF667085), fontSize: 13)),
+                      Text(
+                        description,
+                        style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
+                      ),
                       if (formatSelector != null) ...[
-                        const SizedBox(height: 12),
+                        const SizedBox(height: Space.sm),
                         formatSelector!,
                       ],
                       if (upload != null) ...[
-                        const SizedBox(height: 7),
+                        const SizedBox(height: Space.xxs + 3),
                         Wrap(
                           crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
-                            Tooltip(
-                              message: 'Open the original file',
-                              child: InkWell(
-                                onTap: onOpen,
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(Icons.file_download_outlined, size: 15, color: Color(0xFF245B85)),
-                                    const SizedBox(width: 3),
-                                    Text(
-                                      '${upload!['original_filename']}',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: Color(0xFF245B85),
-                                        fontWeight: FontWeight.w600,
-                                        decoration: TextDecoration.underline,
-                                      ),
-                                    ),
-                                  ],
+                            // Was a bare InkWell around 12px underlined text —
+                            // roughly a 190x16 target, and the only route to the
+                            // uploaded file. TextButton carries a 48px padded
+                            // target and real button semantics for free.
+                            TextButton.icon(
+                              onPressed: onOpen,
+                              icon: const Icon(Icons.file_download_outlined, size: 15),
+                              label: Text(
+                                '${upload!['original_filename']}',
+                                style: theme.textTheme.labelMedium?.copyWith(
+                                  color: colors.info,
+                                  decoration: TextDecoration.underline,
                                 ),
+                              ),
+                              style: TextButton.styleFrom(
+                                foregroundColor: colors.info,
+                                padding: const EdgeInsets.symmetric(horizontal: Space.xs),
+                                minimumSize: const Size(0, minTapTarget),
                               ),
                             ),
                             Text(
-                              '  • ${upload!['row_count']} rows • ${formatDateTime(DateTime.parse(upload!['uploaded_at'] as String))}',
-                              style: const TextStyle(fontSize: 12),
+                              '• ${upload!['row_count']} rows • ${formatDateTime(DateTime.parse(upload!['uploaded_at'] as String))}',
+                              style: theme.textTheme.labelMedium
+                                  ?.copyWith(fontWeight: FontWeight.w400),
                             ),
                           ],
                         ),
                         if (errors.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: InkWell(
-                              onTap: () => onShowErrors(errors),
-                              child: Text(
-                                '${errors.length} ${errors.length == 1 ? 'row' : 'rows'} could not be read — view details',
-                                style: const TextStyle(
-                                  color: Color(0xFFB42318),
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  decoration: TextDecoration.underline,
-                                ),
+                          // Same fix: this is a presenter's only way to find out
+                          // which rows of their sign-in sheet failed to parse,
+                          // and they are most likely on a phone.
+                          TextButton.icon(
+                            onPressed: () => onShowErrors(errors),
+                            icon: const Icon(Icons.report_problem_outlined, size: 15),
+                            label: Text(
+                              '${errors.length} ${errors.length == 1 ? 'row' : 'rows'} could not be read — view details',
+                              style: theme.textTheme.labelMedium?.copyWith(
+                                color: colors.danger,
+                                decoration: TextDecoration.underline,
                               ),
+                            ),
+                            style: TextButton.styleFrom(
+                              foregroundColor: colors.danger,
+                              padding: const EdgeInsets.symmetric(horizontal: Space.xs),
+                              minimumSize: const Size(0, minTapTarget),
+                              alignment: Alignment.centerLeft,
                             ),
                           ),
                       ],
@@ -428,20 +461,20 @@ class _UploadRow extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 StatusBadge(upload == null ? 'NOT UPLOADED' : errors.isEmpty ? 'PROCESSED' : 'CHECK ERRORS', tone: upload == null ? BadgeTone.neutral : errors.isEmpty ? BadgeTone.success : BadgeTone.warning),
-                const SizedBox(width: 10),
+                const SizedBox(width: Space.xs + 2),
                 OutlinedButton.icon(
                   onPressed: loading ? null : onUpload,
                   icon: loading
                       ? const SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.upload_file),
-                  label: Text(upload == null ? 'Upload file' : 'Replace'),
+                  label: Text(upload == null ? 'Upload file for $title' : 'Replace $title'),
                 ),
               ],
             );
             if (constraints.maxWidth < 720) {
-              return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [info, const SizedBox(height: 14), Align(alignment: Alignment.centerRight, child: action)]);
+              return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [info, const SizedBox(height: Space.sm + 2), Align(alignment: Alignment.centerRight, child: action)]);
             }
-            return Row(children: [Expanded(child: info), const SizedBox(width: 16), action]);
+            return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: info), const SizedBox(width: Space.md), action]);
           },
         ),
       ),

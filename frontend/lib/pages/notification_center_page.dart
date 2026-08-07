@@ -33,8 +33,15 @@ class _NotificationCenterPageState extends State<NotificationCenterPage> {
       final result = await widget.session.api.get('/notifications?limit=100') as List;
       if (mounted) setState(() => items = result.cast<Map<String, dynamic>>());
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
+  }
+
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
   }
 
   Future<void> markAllRead() async {
@@ -43,7 +50,7 @@ class _NotificationCenterPageState extends State<NotificationCenterPage> {
       await widget.session.api.post('/notifications/read-all');
       await load();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => markingAll = false);
     }
@@ -66,11 +73,13 @@ class _NotificationCenterPageState extends State<NotificationCenterPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     return Padding(
       padding: pagePadding,
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 900),
+          constraints: const BoxConstraints(maxWidth: maxContentWidth),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -87,14 +96,14 @@ class _NotificationCenterPageState extends State<NotificationCenterPage> {
                 ],
               ),
               if (error != null) ...[
-                const SizedBox(height: 10),
-                Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                const SizedBox(height: Space.xs + 2),
+                FormErrorText(error!),
               ],
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               Expanded(
                 child: Card(
                   child: items == null
-                      ? const LoadingPanel()
+                      ? const LoadingPanel(label: 'Loading notifications')
                       : items!.isEmpty
                           ? const EmptyState(
                               icon: Icons.notifications_none_outlined,
@@ -102,7 +111,7 @@ class _NotificationCenterPageState extends State<NotificationCenterPage> {
                               detail: 'Alerts from presenters and the compliance workflow will appear here.',
                             )
                           : ListView.separated(
-                              padding: const EdgeInsets.all(6),
+                              padding: const EdgeInsets.all(Space.xxs + 2),
                               itemCount: items!.length,
                               separatorBuilder: (_, __) => divider,
                               itemBuilder: (context, index) {
@@ -110,24 +119,44 @@ class _NotificationCenterPageState extends State<NotificationCenterPage> {
                                 final unread = item['is_read'] != true;
                                 final created = DateTime.tryParse(item['created_at']?.toString() ?? '');
                                 return ListTile(
-                                  leading: Icon(
-                                    unread ? Icons.mark_email_unread_outlined : Icons.mark_email_read_outlined,
-                                    color: unread ? const Color(0xFF245B85) : const Color(0xFF98A2B3),
+                                  leading: Semantics(
+                                    // Read state was carried by icon colour
+                                    // alone; the shape differs too, but neither
+                                    // is announced.
+                                    label: unread ? 'Unread' : 'Read',
+                                    excludeSemantics: true,
+                                    child: Icon(
+                                      unread ? Icons.mark_email_unread_outlined : Icons.mark_email_read_outlined,
+                                      color: unread ? colors.info : colors.textTertiary,
+                                    ),
                                   ),
                                   title: Text(
                                     item['title'] as String,
-                                    style: TextStyle(fontWeight: unread ? FontWeight.w700 : FontWeight.w500),
+                                    style: theme.textTheme.bodyMedium?.copyWith(
+                                      fontWeight: unread ? FontWeight.w700 : FontWeight.w500,
+                                    ),
                                   ),
                                   subtitle: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       if (item['body'] != null) Text(item['body'] as String),
                                       if (created != null)
-                                        Text(DateFormat.yMMMd().add_jm().format(created.toLocal()),
-                                            style: const TextStyle(fontSize: 11, color: Color(0xFF98A2B3))),
+                                        Text(
+                                          DateFormat.yMMMd().add_jm().format(created.toLocal()),
+                                          // 11px timestamps were #98A2B3 at
+                                          // 2.58:1 — the worst offender in the
+                                          // app, since small text gets no AA
+                                          // discount. textTertiary is 4.97:1.
+                                          style: theme.textTheme.labelSmall?.copyWith(
+                                            color: colors.textTertiary,
+                                            fontWeight: FontWeight.w400,
+                                          ),
+                                        ),
                                     ],
                                   ),
-                                  trailing: item['event_id'] != null ? const Icon(Icons.chevron_right) : null,
+                                  trailing: item['event_id'] != null
+                                      ? const ExcludeSemantics(child: Icon(Icons.chevron_right))
+                                      : null,
                                   onTap: () => open(item),
                                 );
                               },

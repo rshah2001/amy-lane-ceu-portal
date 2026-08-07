@@ -27,21 +27,26 @@ class _SettingsPageState extends State<SettingsPage> {
       final result = await widget.session.api.get('/settings') as Map<String, dynamic>;
       if (mounted) setState(() => settings = result);
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     if (error != null) return ErrorPanel(message: error!, onRetry: load);
-    if (settings == null) return const LoadingPanel();
+    if (settings == null) return const LoadingPanel(label: 'Loading settings');
+    final colors = Theme.of(context).portal;
     final user = settings!['current_user'] as Map<String, dynamic>;
     final isAdmin = widget.session.user!.isAdmin;
     return SingleChildScrollView(
       padding: pagePadding,
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 900),
+          constraints: const BoxConstraints(maxWidth: maxContentWidth),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -49,24 +54,24 @@ class _SettingsPageState extends State<SettingsPage> {
                 title: 'Settings',
                 subtitle: isAdmin ? 'Account and compliance environment configuration.' : 'Your account.',
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: Space.md + 2),
               Card(
                 child: Column(
                   children: [
-                    const ListTile(title: Text('Account', style: TextStyle(fontWeight: FontWeight.w700))),
+                    const ListTile(title: SectionTitle('Account')),
                     divider,
                     ListTile(leading: const Icon(Icons.person_outline), title: Text(user['full_name'] as String), subtitle: Text(user['email'] as String), trailing: StatusBadge((user['role'] as String).toUpperCase(), tone: BadgeTone.info)),
                   ],
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               // Ops internals (email delivery, environment, retention) only
               // mean something to admins; presenters just need their account.
               if (isAdmin) ...[
                 Card(
                   child: Column(
                     children: [
-                      const ListTile(title: Text('Compliance configuration', style: TextStyle(fontWeight: FontWeight.w700))),
+                      const ListTile(title: SectionTitle('Compliance configuration')),
                       divider,
                       _SettingRow(icon: Icons.business_outlined, label: 'Certificate issuer', value: settings!['organization'].toString()),
                       divider,
@@ -82,17 +87,22 @@ class _SettingsPageState extends State<SettingsPage> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: Space.sm + 2),
                 _SurveyTemplateCard(session: widget.session),
-                const SizedBox(height: 14),
+                const SizedBox(height: Space.sm + 2),
               ],
               Card(
                 child: Padding(
-                  padding: const EdgeInsets.all(18),
+                  padding: const EdgeInsets.all(Space.md + 2),
                   child: Row(
                     children: [
-                      Icon(isAdmin ? Icons.shield_outlined : Icons.help_outline, color: const Color(0xFF176B3A)),
-                      const SizedBox(width: 12),
+                      ExcludeSemantics(
+                        child: Icon(
+                          isAdmin ? Icons.shield_outlined : Icons.help_outline,
+                          color: colors.success,
+                        ),
+                      ),
+                      const SizedBox(width: Space.sm),
                       Expanded(
                         child: Text(
                           isAdmin
@@ -154,7 +164,11 @@ class _SurveyTemplateCardState extends State<_SurveyTemplateCard> {
             ]);
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     }
   }
 
@@ -180,7 +194,11 @@ class _SurveyTemplateCardState extends State<_SurveyTemplateCard> {
         const SnackBar(content: Text('Default survey questions saved — they apply to newly created events.')),
       );
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     } finally {
       if (mounted) setState(() => saving = false);
     }
@@ -188,28 +206,32 @@ class _SurveyTemplateCardState extends State<_SurveyTemplateCard> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const ListTile(title: Text('Default survey questions', style: TextStyle(fontWeight: FontWeight.w700))),
+          const ListTile(title: SectionTitle('Default survey questions')),
           divider,
           Padding(
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.all(Space.md + 2),
             child: questions == null && error == null
-                ? const LoadingPanel()
+                ? const LoadingPanel(label: 'Loading default survey questions')
                 : Form(
                     key: formKey,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        const Text(
+                        Text(
                           'Every new event starts with these questions; each event keeps its own copy, '
                           'so changes here never affect existing events. Use "Multiple choice" for an '
                           'agree/disagree scale — the standard scale is pre-filled.',
-                          style: TextStyle(fontSize: 12, color: Color(0xFF667085)),
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: theme.portal.textSecondary,
+                            fontWeight: FontWeight.w400,
+                          ),
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: Space.sm),
                         for (var i = 0; i < (questions?.length ?? 0); i++) ...[
                           SurveyQuestionEditor(
                             index: i + 1,
@@ -217,11 +239,11 @@ class _SurveyTemplateCardState extends State<_SurveyTemplateCard> {
                             onRemove: () => setState(() => questions!.removeAt(i).dispose()),
                             onChanged: () => setState(() {}),
                           ),
-                          const SizedBox(height: 10),
+                          const SizedBox(height: Space.xs + 2),
                         ],
                         if (error != null) ...[
-                          Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
-                          const SizedBox(height: 10),
+                          FormErrorText(error!),
+                          const SizedBox(height: Space.xs + 2),
                         ],
                         Row(
                           children: [
@@ -256,12 +278,17 @@ class _SettingRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return ListTile(
-      leading: Icon(icon),
+      leading: ExcludeSemantics(child: Icon(icon)),
       title: Text(label),
       trailing: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 420),
-        child: Text(value, textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.w600)),
+        child: Text(
+          value,
+          textAlign: TextAlign.right,
+          style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+        ),
       ),
     );
   }

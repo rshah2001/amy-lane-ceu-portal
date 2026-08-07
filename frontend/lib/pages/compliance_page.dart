@@ -42,6 +42,17 @@ class _CompliancePageState extends State<CompliancePage> {
   static bool _certificateReachedHolder(ComplianceRecord record) =>
       record.certificateSentAt != null || record.certificateDownloadedAt != null;
 
+  /// Shows a failure and speaks it. Every bulk action here is destructive or
+  /// irreversible, so a silently-rendered red banner is not good enough: a
+  /// screen reader user who presses "Remove all" needs to hear why it didn't
+  /// happen, not discover it later.
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
+  }
+
   Future<void> load() async {
     if (!mounted) return;
     setState(() {
@@ -60,7 +71,7 @@ class _CompliancePageState extends State<CompliancePage> {
         });
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
   }
 
@@ -70,6 +81,7 @@ class _CompliancePageState extends State<CompliancePage> {
     // admins, but only after an explicit, per-name confirmation.
     final ineligible = records!.where((r) => selected.contains(r.id) && !r.eligible).toList();
     if (ineligible.isNotEmpty) {
+      final theme = Theme.of(context);
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -81,13 +93,13 @@ class _CompliancePageState extends State<CompliancePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('These attendees do not meet the requirements. Approving them anyway is recorded in the audit log:'),
-                const SizedBox(height: 10),
+                const SizedBox(height: Space.xs + 2),
                 for (final record in ineligible)
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.only(bottom: Space.xxs + 2),
                     child: Text(
                       '• ${record.fullName} — ${record.reasons.join(', ')}',
-                      style: const TextStyle(fontSize: 13, color: Color(0xFFB42318)),
+                      style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.danger),
                     ),
                   ),
               ],
@@ -111,7 +123,7 @@ class _CompliancePageState extends State<CompliancePage> {
       selected.clear();
       await load();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => working = false);
     }
@@ -158,7 +170,10 @@ class _CompliancePageState extends State<CompliancePage> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFB42318), foregroundColor: Colors.white),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Theme.of(context).portal.danger,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () => Navigator.pop(dialogContext, true),
             child: const Text('Revoke approval'),
           ),
@@ -174,7 +189,7 @@ class _CompliancePageState extends State<CompliancePage> {
       });
       await load();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => working = false);
     }
@@ -185,6 +200,7 @@ class _CompliancePageState extends State<CompliancePage> {
   /// another event. Their certificate and this event's test/survey results go
   /// with them; they stay on every other event they attended.
   Future<void> remove(ComplianceRecord record) async {
+    final theme = Theme.of(context);
     final alreadyIssued = _certificateReachedHolder(record);
     final confirmed = await showDialog<bool>(
       context: context,
@@ -199,21 +215,22 @@ class _CompliancePageState extends State<CompliancePage> {
               const Text(
                 'They come off this event only — other events they attended are unchanged.',
               ),
-              const SizedBox(height: 10),
-              const Text(
+              const SizedBox(height: Space.xs + 2),
+              Text(
                 'Their post-test score and survey response for this event go too. Uploading the '
                 'sign-in sheet again brings the person back, but not those results.',
-                style: TextStyle(fontSize: 13, color: Color(0xFF667085)),
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.textSecondary),
               ),
               if (alreadyIssued) ...[
-                const SizedBox(height: 10),
+                const SizedBox(height: Space.xs + 2),
                 Text(
                   record.certificateSentAt != null
                       ? 'Their certificate was already emailed. Removing them deletes it, and the '
                           'certificate number will no longer verify in the public portal.'
                       : 'They already downloaded their certificate. Removing them deletes it, and the '
                           'certificate number will no longer verify in the public portal.',
-                  style: const TextStyle(color: Color(0xFFB42318), fontWeight: FontWeight.w600),
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: theme.portal.danger, fontWeight: FontWeight.w600),
                 ),
               ],
             ],
@@ -222,7 +239,10 @@ class _CompliancePageState extends State<CompliancePage> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFB42318), foregroundColor: Colors.white),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Theme.of(context).portal.danger,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () => Navigator.pop(dialogContext, true),
             child: const Text('Remove attendee'),
           ),
@@ -243,7 +263,7 @@ class _CompliancePageState extends State<CompliancePage> {
       await load();
     } catch (exception) {
       if (!mounted) return;
-      setState(() => error = exception.toString());
+      _fail(exception);
       // A 409 means the server knows about a delivered certificate this row
       // didn't: reload so the retry shows the red warning and sends the
       // override instead of repeating the identical, always-rejected request.
@@ -256,6 +276,7 @@ class _CompliancePageState extends State<CompliancePage> {
   /// Empties the roster. The repair for an event showing the wrong people:
   /// clear it, then upload that event's sign-in sheet again to rebuild it.
   Future<void> removeAll() async {
+    final theme = Theme.of(context);
     final messenger = ScaffoldMessenger.of(context);
     // `records` holds a server-filtered view; this clears the WHOLE roster, so
     // every number in the dialog has to come from an unfiltered read. Counting
@@ -267,7 +288,7 @@ class _CompliancePageState extends State<CompliancePage> {
       final result = await widget.session.api.get('/events/${widget.event.id}/compliance') as List;
       all = result.map((item) => ComplianceRecord.fromJson(item as Map<String, dynamic>)).toList();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
       return;
     } finally {
       if (mounted) setState(() => working = false);
@@ -300,19 +321,20 @@ class _CompliancePageState extends State<CompliancePage> {
                   'their certificates and this event\'s test and survey results. This cannot be undone.',
                 ),
                 if (filtered) ...[
-                  const SizedBox(height: 10),
-                  const Text(
+                  const SizedBox(height: Space.xs + 2),
+                  Text(
                     'The whole roster is cleared, not just the rows matching the current filter.',
-                    style: TextStyle(fontSize: 13, color: Color(0xFFB54708), fontWeight: FontWeight.w600),
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.portal.warning, fontWeight: FontWeight.w600),
                   ),
                 ],
-                const SizedBox(height: 10),
-                const Text(
+                const SizedBox(height: Space.xs + 2),
+                Text(
                   'Upload this event\'s sign-in sheet again afterwards to rebuild the roster from the file alone.',
-                  style: TextStyle(fontSize: 13, color: Color(0xFF667085)),
+                  style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.textSecondary),
                 ),
                 if (sentCount > 0) ...[
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Space.xxs + 2),
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
@@ -321,11 +343,14 @@ class _CompliancePageState extends State<CompliancePage> {
                     onChanged: (value) => setDialogState(() => includeSent = value ?? false),
                     title: Text(
                       'Also remove the $sentCount attendee${sentCount == 1 ? '' : 's'} who already has their certificate',
-                      style: const TextStyle(fontSize: 13, color: Color(0xFFB42318)),
+                      style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.danger),
                     ),
-                    subtitle: const Text(
+                    subtitle: Text(
                       'Those certificate numbers stop verifying in the public portal. Left unchecked, they stay on the roster.',
-                      style: TextStyle(fontSize: 12),
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: theme.portal.textSecondary,
+                        fontWeight: FontWeight.w400,
+                      ),
                     ),
                   ),
                 ],
@@ -335,7 +360,10 @@ class _CompliancePageState extends State<CompliancePage> {
           actions: [
             TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFB42318), foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+              backgroundColor: Theme.of(context).portal.danger,
+              foregroundColor: Colors.white,
+            ),
               onPressed: () => Navigator.pop(dialogContext, true),
               child: const Text('Remove all'),
             ),
@@ -362,7 +390,7 @@ class _CompliancePageState extends State<CompliancePage> {
       selected.clear();
       await load();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => working = false);
     }
@@ -378,14 +406,35 @@ class _CompliancePageState extends State<CompliancePage> {
       ));
       await load();
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => working = false);
     }
   }
 
+  /// An icon-only requirement column that still has a name.
+  DataColumn _requirementColumn(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String tooltip,
+  }) {
+    return DataColumn(
+      label: Semantics(
+        label: label,
+        excludeSemantics: true,
+        child: Tooltip(
+          message: tooltip,
+          child: Icon(icon, size: 18, color: Theme.of(context).portal.textSecondary),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     final isAdmin = widget.session.user!.isAdmin;
     return Padding(
       padding: pagePadding,
@@ -405,37 +454,22 @@ class _CompliancePageState extends State<CompliancePage> {
                       icon: const Icon(Icons.verified_outlined),
                       label: Text('Approve selected (${selected.length})'),
                     ),
-                    PopupMenuButton<String>(
+                    ActionMenu(
+                      label: 'Bulk actions',
+                      icon: const Icon(Icons.bolt_outlined),
                       enabled: !working,
-                      onSelected: (value) => switch (value) {
-                        'approve-all' => bulk('approve-all', 'Approve all eligible'),
-                        'generate-all' => bulk('generate-all', 'Generate all'),
-                        'send-all' => confirmSendAll(),
-                        'remove-all' => removeAll(),
-                        _ => Future<void>.value(),
-                      },
-                      itemBuilder: (context) => const [
-                        PopupMenuItem(value: 'approve-all', child: Text('Approve all eligible')),
-                        PopupMenuItem(value: 'generate-all', child: Text('Generate all approved')),
-                        PopupMenuItem(value: 'send-all', child: Text('Send all generated')),
-                        PopupMenuDivider(),
-                        PopupMenuItem(
-                          value: 'remove-all',
-                          child: Text('Remove all attendees', style: TextStyle(color: Color(0xFFB42318))),
-                        ),
+                      actions: [
+                        MenuAction('Approve all eligible', () => bulk('approve-all', 'Approve all eligible')),
+                        MenuAction('Generate all approved', () => bulk('generate-all', 'Generate all')),
+                        MenuAction('Send all generated', confirmSendAll),
+                        null,
+                        MenuAction('Remove all attendees', removeAll, destructive: true),
                       ],
-                      child: IgnorePointer(
-                        child: OutlinedButton.icon(
-                          onPressed: () {},
-                          icon: const Icon(Icons.bolt_outlined),
-                          label: const Text('Bulk actions'),
-                        ),
-                      ),
                     ),
                   ],
                 ],
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: Space.md + 2),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final searchField = TextField(
@@ -456,20 +490,20 @@ class _CompliancePageState extends State<CompliancePage> {
                     },
                   );
                   if (constraints.maxWidth < 760) {
-                    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [searchField, const SizedBox(height: 10), SingleChildScrollView(scrollDirection: Axis.horizontal, child: filters)]);
+                    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [searchField, const SizedBox(height: Space.xs + 2), SingleChildScrollView(scrollDirection: Axis.horizontal, child: filters)]);
                   }
-                  return Row(children: [Expanded(child: searchField), const SizedBox(width: 12), filters]);
+                  return Row(children: [Expanded(child: searchField), const SizedBox(width: Space.sm), filters]);
                 },
               ),
               if (error != null) ...[
-                const SizedBox(height: 10),
+                const SizedBox(height: Space.xs + 2),
                 InlineAlert(message: error!, onRetry: load, onDismiss: () => setState(() => error = null)),
               ],
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               Expanded(
                 child: Card(
                   child: records == null
-                      ? const LoadingPanel()
+                      ? const LoadingPanel(label: 'Loading compliance records')
                       : records!.isEmpty
                           ? const EmptyState(
                               icon: Icons.fact_check_outlined,
@@ -487,15 +521,48 @@ class _CompliancePageState extends State<CompliancePage> {
                                   showCheckboxColumn: isAdmin,
                                   columnSpacing: 28,
                                   dataRowMinHeight: 48,
-                                  dataRowMaxHeight: 74,
+                                  // Unbounded. The old 74px cap sat below the
+                                  // attendee cell's own content — name, email,
+                                  // and up to two lines of eligibility reasons
+                                  // — so from about 130% text scale Flutter
+                                  // painted overflow stripes straight over the
+                                  // reasons, which are the whole point of the
+                                  // column.
+                                  dataRowMaxHeight: double.infinity,
                                   columns: [
                                     const DataColumn(label: Text('Attendee')),
-                                    const DataColumn(label: Tooltip(message: 'Attended the session', child: Icon(Icons.event_available_outlined, size: 18, color: Color(0xFF667085)))),
-                                    const DataColumn(label: Tooltip(message: 'Post-test passed (80% or higher)', child: Icon(Icons.quiz_outlined, size: 18, color: Color(0xFF667085)))),
-                                    const DataColumn(label: Tooltip(message: 'Survey completed', child: Icon(Icons.rate_review_outlined, size: 18, color: Color(0xFF667085)))),
-                                    const DataColumn(label: Tooltip(message: 'Valid email address on file', child: Icon(Icons.alternate_email, size: 18, color: Color(0xFF667085)))),
+                                    // Icon-only headers announced as nothing at
+                                    // all, so the four requirement columns were
+                                    // unidentifiable by ear.
+                                    _requirementColumn(
+                                      context,
+                                      icon: Icons.event_available_outlined,
+                                      label: 'Attended',
+                                      tooltip: 'Attended the session',
+                                    ),
+                                    _requirementColumn(
+                                      context,
+                                      icon: Icons.quiz_outlined,
+                                      label: 'Post-test passed',
+                                      tooltip: 'Post-test passed (80% or higher)',
+                                    ),
+                                    _requirementColumn(
+                                      context,
+                                      icon: Icons.rate_review_outlined,
+                                      label: 'Survey completed',
+                                      tooltip: 'Survey completed',
+                                    ),
+                                    _requirementColumn(
+                                      context,
+                                      icon: Icons.alternate_email,
+                                      label: 'Valid email',
+                                      tooltip: 'Valid email address on file',
+                                    ),
                                     const DataColumn(label: Text('Status')),
-                                    if (isAdmin) const DataColumn(label: Text('')),
+                                    if (isAdmin)
+                                      DataColumn(
+                                        label: Semantics(label: 'Actions', child: const Text('')),
+                                      ),
                                   ],
                                   rows: records!
                                       .map(
@@ -508,14 +575,29 @@ class _CompliancePageState extends State<CompliancePage> {
                                               : (value) => setState(() => value == true ? selected.add(record.id) : selected.remove(record.id)),
                                           cells: [
                                             DataCell(
-                                              SizedBox(
-                                                width: 240,
+                                              // Min-width rather than fixed, so
+                                              // the three stacked lines can grow
+                                              // at large text scale instead of
+                                              // being clipped.
+                                              ConstrainedBox(
+                                                constraints: const BoxConstraints(minWidth: 240, maxWidth: 320),
                                                 child: Column(
                                                   mainAxisAlignment: MainAxisAlignment.center,
                                                   crossAxisAlignment: CrossAxisAlignment.start,
                                                   children: [
-                                                    Text(record.fullName, style: const TextStyle(fontWeight: FontWeight.w600)),
-                                                    Text(record.email ?? 'No email', overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0xFF667085))),
+                                                    Text(
+                                                      record.fullName,
+                                                      style: theme.textTheme.bodyMedium
+                                                          ?.copyWith(fontWeight: FontWeight.w600),
+                                                    ),
+                                                    Text(
+                                                      record.email ?? 'No email',
+                                                      overflow: TextOverflow.ellipsis,
+                                                      style: theme.textTheme.labelMedium?.copyWith(
+                                                        color: colors.textTertiary,
+                                                        fontWeight: FontWeight.w400,
+                                                      ),
+                                                    ),
                                                     if (record.reasons.isNotEmpty)
                                                       Tooltip(
                                                         message: record.reasons.join('\n'),
@@ -523,17 +605,33 @@ class _CompliancePageState extends State<CompliancePage> {
                                                           record.reasons.join(' • '),
                                                           maxLines: 2,
                                                           overflow: TextOverflow.ellipsis,
-                                                          style: const TextStyle(fontSize: 11, color: Color(0xFFB42318)),
+                                                          style: theme.textTheme.labelSmall?.copyWith(
+                                                            color: colors.danger,
+                                                            fontWeight: FontWeight.w400,
+                                                          ),
                                                         ),
                                                       ),
                                                   ],
                                                 ),
                                               ),
                                             ),
-                                            DataCell(checkIcon(record.attended)),
-                                            DataCell(Row(mainAxisSize: MainAxisSize.min, children: [checkIcon(record.testCompleted && (record.testScore ?? 0) >= 80), const SizedBox(width: 5), Text(record.testScore == null ? '—' : '${record.testScore!.toStringAsFixed(0)}%', style: const TextStyle(fontSize: 12))])),
-                                            DataCell(checkIcon(record.surveyCompleted)),
-                                            DataCell(checkIcon(record.validEmail)),
+                                            DataCell(CheckIcon(record.attended, label: 'Attended')),
+                                            DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
+                                              CheckIcon(
+                                                record.testCompleted && (record.testScore ?? 0) >= 80,
+                                                label: 'Post-test passed',
+                                              ),
+                                              const SizedBox(width: Space.xxs + 1),
+                                              Text(
+                                                record.testScore == null
+                                                    ? '—'
+                                                    : '${record.testScore!.toStringAsFixed(0)}%',
+                                                style: theme.textTheme.labelMedium
+                                                    ?.copyWith(fontWeight: FontWeight.w400),
+                                              ),
+                                            ])),
+                                            DataCell(CheckIcon(record.surveyCompleted, label: 'Survey completed')),
+                                            DataCell(CheckIcon(record.validEmail, label: 'Valid email')),
                                             DataCell(lifecycleBadge(record.lifecycleStatus)),
                                             if (isAdmin)
                                               DataCell(
@@ -542,14 +640,18 @@ class _CompliancePageState extends State<CompliancePage> {
                                                   children: [
                                                     if (record.approved && record.certificateSentAt == null)
                                                       IconButton(
-                                                        tooltip: 'Revoke approval',
+                                                        tooltip: 'Revoke approval for ${record.fullName}',
                                                         onPressed: working ? null : () => revoke(record),
-                                                        icon: const Icon(Icons.undo, size: 18, color: Color(0xFFB42318)),
+                                                        icon: Icon(Icons.undo, size: 18, color: colors.danger),
                                                       ),
                                                     IconButton(
-                                                      tooltip: 'Remove from this event',
+                                                      tooltip: 'Remove ${record.fullName} from this event',
                                                       onPressed: working ? null : () => remove(record),
-                                                      icon: const Icon(Icons.person_remove_outlined, size: 18, color: Color(0xFF667085)),
+                                                      icon: Icon(
+                                                        Icons.person_remove_outlined,
+                                                        size: 18,
+                                                        color: colors.textSecondary,
+                                                      ),
                                                     ),
                                                   ],
                                                 ),

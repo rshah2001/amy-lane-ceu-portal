@@ -48,13 +48,22 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
         });
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     }
+  }
+
+  void _fail(Object exception) {
+    if (!mounted) return;
+    final message = humanizeError(exception);
+    setState(() => error = message);
+    announceToScreenReader(context, message);
   }
 
   Future<void> exportAnnualReport() async {
     if (selectedColumns.isEmpty) {
-      setState(() => error = 'Select at least one column to export.');
+      const message = 'Select at least one column to export.';
+      setState(() => error = message);
+      announceToScreenReader(context, message);
       return;
     }
     setState(() => exporting = true);
@@ -67,7 +76,7 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
       final bytes = await widget.session.api.download('/reports/annual/$year?${params.join('&')}');
       downloadBytes(bytes, 'ceu-annual-report-$year.csv', 'text/csv');
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) _fail(exception);
     } finally {
       if (mounted) setState(() => exporting = false);
     }
@@ -75,6 +84,8 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     return Padding(
       padding: pagePadding,
       child: Center(
@@ -89,6 +100,8 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                 actions: [
                   DropdownButton<int>(
                     value: year,
+                    // Announced as an unnamed combo box without this.
+                    hint: const Text('Report year'),
                     items: [for (var value = DateTime.now().year; value >= DateTime.now().year - 7; value--) DropdownMenuItem(value: value, child: Text('$value'))],
                     onChanged: (value) => setState(() => year = value!),
                   ),
@@ -100,25 +113,27 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                 ],
               ),
               if (error != null) ...[
-                const SizedBox(height: 10),
-                Text(error!, style: const TextStyle(color: Color(0xFFB42318))),
+                const SizedBox(height: Space.xs + 2),
+                FormErrorText(error!),
               ],
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               if (columns.isNotEmpty)
                 Card(
                   child: Padding(
-                    padding: const EdgeInsets.all(18),
+                    padding: const EdgeInsets.all(Space.md + 2),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('Report builder', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 4),
-                        const Text('Pick columns and filters, then export the annual CSV.',
-                            style: TextStyle(fontSize: 13, color: Color(0xFF667085))),
-                        const SizedBox(height: 12),
+                        SectionTitle('Report builder', style: theme.textTheme.titleSmall),
+                        const SizedBox(height: Space.xxs),
+                        Text(
+                          'Pick columns and filters, then export the annual CSV.',
+                          style: theme.textTheme.bodySmall?.copyWith(color: colors.textSecondary),
+                        ),
+                        const SizedBox(height: Space.sm),
                         Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
+                          spacing: Space.xs,
+                          runSpacing: Space.xs,
                           children: [
                             for (final column in columns)
                               FilterChip(
@@ -130,11 +145,15 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                               ),
                           ],
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: Space.sm),
                         Row(
                           children: [
-                            const Text('Eligibility: ', style: TextStyle(color: Color(0xFF667085))),
-                            const SizedBox(width: 8),
+                            Text(
+                              'Eligibility: ',
+                              style: theme.textTheme.bodyMedium
+                                  ?.copyWith(color: colors.textSecondary),
+                            ),
+                            const SizedBox(width: Space.xs),
                             SegmentedButton<String>(
                               segments: const [
                                 ButtonSegment(value: 'all', label: Text('All')),
@@ -150,10 +169,10 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                     ),
                   ),
                 ),
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               Card(
                 child: Padding(
-                  padding: const EdgeInsets.all(18),
+                  padding: const EdgeInsets.all(Space.md + 2),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -161,14 +180,11 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                         builder: (context) {
                           final themes = (insights?['common_themes'] as List?) ?? [];
                           return Wrap(
-                            spacing: 12,
-                            runSpacing: 12,
+                            spacing: Space.sm,
+                            runSpacing: Space.sm,
                             crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
-                              Text(
-                                '${insights?['response_count'] ?? 0} survey responses',
-                                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
-                              ),
+                              SectionTitle('${insights?['response_count'] ?? 0} survey responses'),
                               for (final theme in themes.take(8))
                                 StatusBadge('${theme['theme']} (${theme['mentions']})', tone: BadgeTone.info),
                               if (themes.isEmpty)
@@ -178,22 +194,24 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                         },
                       ),
                       if (insights?['ai_summary'] != null) ...[
-                        const SizedBox(height: 16),
+                        const SizedBox(height: Space.md),
                         const Divider(height: 1),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: Space.sm + 2),
                         Row(
-                          children: const [
-                            Icon(Icons.auto_awesome_outlined, size: 18, color: Color(0xFF5F6CAF)),
-                            SizedBox(width: 6),
-                            Text('AI summary across sessions', style: TextStyle(fontWeight: FontWeight.w700)),
+                          children: [
+                            ExcludeSemantics(
+                              child: Icon(Icons.auto_awesome_outlined, size: 18, color: colors.accentAlt),
+                            ),
+                            const SizedBox(width: Space.xxs + 2),
+                            const SectionTitle('AI summary across sessions'),
                           ],
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: Space.xs),
                         Text('${(insights!['ai_summary'] as Map)['executive_summary']}'),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: Space.sm),
                         Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
+                          spacing: Space.xs,
+                          runSpacing: Space.xs,
                           children: [
                             for (final theme in (((insights!['ai_summary'] as Map)['themes'] as List?) ?? []))
                               StatusBadge('${theme['theme']} (${theme['mentions']})', tone: BadgeTone.success),
@@ -201,19 +219,25 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                         ),
                         for (final quote in (((insights!['ai_summary'] as Map)['representative_quotes'] as List?) ?? []))
                           Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Text('“$quote”', style: const TextStyle(fontStyle: FontStyle.italic, color: Color(0xFF475467))),
+                            padding: const EdgeInsets.only(top: Space.xs),
+                            child: Text(
+                              '“$quote”',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontStyle: FontStyle.italic,
+                                color: colors.textSecondary,
+                              ),
+                            ),
                           ),
                       ],
                     ],
                   ),
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: Space.sm + 2),
               Expanded(
                 child: Card(
                   child: logs == null
-                      ? const LoadingPanel()
+                      ? const LoadingPanel(label: 'Loading audit log')
                       : logs!.isEmpty
                           ? const EmptyState(
                               icon: Icons.assessment_outlined,
@@ -241,7 +265,10 @@ class _AuditReportsPageState extends State<AuditReportsPage> {
                                         DataCell(Text('${log['entity_type']} #${log['entity_id'] ?? '—'}')),
                                         DataCell(Text('${log['event_id'] ?? '—'}')),
                                         DataCell(Text('${log['actor_id'] ?? 'system'}')),
-                                        DataCell(SizedBox(width: 330, child: Text(log['details'].toString(), maxLines: 2, overflow: TextOverflow.ellipsis))),
+                                        DataCell(ConstrainedBox(
+                                          constraints: const BoxConstraints(minWidth: 330, maxWidth: 460),
+                                          child: Text(log['details'].toString(), maxLines: 2, overflow: TextOverflow.ellipsis),
+                                        )),
                                       ],
                                     ),
                                   )

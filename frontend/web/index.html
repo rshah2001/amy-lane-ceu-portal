@@ -1,5 +1,8 @@
 <!DOCTYPE html>
-<html>
+<!-- lang is what tells a screen reader which pronunciation rules to use. Without
+     it VoiceOver/NVDA fall back to the user's own default voice, which mangles
+     English content for anyone whose system language is set to something else. -->
+<html lang="en">
 <head>
   <base href="$FLUTTER_BASE_HREF">
   <meta charset="UTF-8">
@@ -11,6 +14,17 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <!-- Without this a browser with JavaScript blocked shows a permanently blank
+       white page and no explanation — including on the public QR-code pages. -->
+  <noscript>
+    <div style="font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+                max-width: 34rem; margin: 4rem auto; padding: 0 1.5rem; color: #1D2939;
+                line-height: 1.5;">
+      <h1 style="font-size: 1.5rem;">JavaScript is required</h1>
+      <p>The CEU Compliance Portal needs JavaScript to run. Please enable it and
+         reload this page, or contact your NMEDA administrator for help.</p>
+    </div>
+  </noscript>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

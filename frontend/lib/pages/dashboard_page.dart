@@ -3,7 +3,6 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../core/session.dart';
-import '../core/theme.dart';
 import '../models/models.dart';
 import '../widgets/charts.dart';
 import '../widgets/common.dart';
@@ -64,7 +63,11 @@ class _DashboardPageState extends State<DashboardPage> {
         ];
       });
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     }
   }
 
@@ -82,7 +85,9 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   Widget build(BuildContext context) {
     if (error != null) return ErrorPanel(message: error!, onRetry: load);
-    if (stats == null) return const LoadingPanel();
+    if (stats == null) return const LoadingPanel(label: 'Loading dashboard');
+    final theme = Theme.of(context);
+    final colors = theme.portal;
     final data = stats!;
     final isAdmin = widget.session.user!.isAdmin;
     return SingleChildScrollView(
@@ -102,36 +107,37 @@ class _DashboardPageState extends State<DashboardPage> {
                     ElevatedButton.icon(onPressed: widget.onCreateEvent, icon: const Icon(Icons.add), label: const Text('Create event')),
                 ],
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: Space.xl),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final columns = constraints.maxWidth >= 1100 ? 5 : constraints.maxWidth >= 620 ? 2 : 1;
-                  final width = (constraints.maxWidth - (columns - 1) * 12) / columns;
+                  final width = (constraints.maxWidth - (columns - 1) * Space.sm) / columns;
                   final cards = [
                     StatCard(label: 'Total events', value: '${data.totalEvents}', icon: Icons.event_available_outlined, color: navy),
                     StatCard(label: 'Upcoming', value: '${data.upcomingEvents}', icon: Icons.calendar_month_outlined, color: teal),
                     StatCard(label: 'Pending review', value: '${data.pendingReviews}', icon: Icons.fact_check_outlined, color: gold),
-                    StatCard(label: 'Certificates sent', value: '${data.certificatesSent}', icon: Icons.send_outlined, color: const Color(0xFF5F6CAF)),
-                    StatCard(label: 'Compliance rate', value: '${data.complianceRate.toStringAsFixed(1)}%', icon: Icons.insights_outlined, color: const Color(0xFF248A52)),
+                    StatCard(label: 'Certificates sent', value: '${data.certificatesSent}', icon: Icons.send_outlined, color: colors.accentAlt),
+                    StatCard(label: 'Compliance rate', value: '${data.complianceRate.toStringAsFixed(1)}%', icon: Icons.insights_outlined, color: colors.success),
                   ];
-                  return Wrap(spacing: 12, runSpacing: 12, children: cards.map((card) => SizedBox(width: width, child: card)).toList());
+                  return Wrap(spacing: Space.sm, runSpacing: Space.sm, children: cards.map((card) => SizedBox(width: width, child: card)).toList());
                 },
               ),
               if (charts != null) ...[
-                const SizedBox(height: 24),
+                const SizedBox(height: Space.xl),
                 LayoutBuilder(
                   builder: (context, constraints) {
                     final twoUp = constraints.maxWidth >= 900;
-                    final width = twoUp ? (constraints.maxWidth - 12) / 2 : constraints.maxWidth;
+                    final width = twoUp ? (constraints.maxWidth - Space.sm) / 2 : constraints.maxWidth;
                     return Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
+                      spacing: Space.sm,
+                      runSpacing: Space.sm,
                       children: [
                         SizedBox(
                           width: width,
                           child: ChartCard(
                             title: 'Post-test score distribution',
                             child: SimpleBarChart(
+                              description: 'Post-test score distribution',
                               labels: charts!.scoreDistribution.map((b) => b.label).toList(),
                               values: charts!.scoreDistribution.map((b) => b.value.toDouble()).toList(),
                               color: navy,
@@ -143,6 +149,7 @@ class _DashboardPageState extends State<DashboardPage> {
                           child: ChartCard(
                             title: 'Certificates sent (last 6 months)',
                             child: SimpleBarChart(
+                              description: 'Certificates sent in the last 6 months',
                               labels: charts!.monthlyCertificates.map((b) => b.label).toList(),
                               values: charts!.monthlyCertificates.map((b) => b.value.toDouble()).toList(),
                               color: teal,
@@ -155,6 +162,7 @@ class _DashboardPageState extends State<DashboardPage> {
                             child: ChartCard(
                               title: 'Eligible attendees by event',
                               child: SimpleBarChart(
+                                description: 'Eligible attendees by event',
                                 labels: complianceChartLabels.length == charts!.eventsCompliance.length
                                     ? complianceChartLabels
                                     : [
@@ -162,7 +170,7 @@ class _DashboardPageState extends State<DashboardPage> {
                                           e.title.length > 14 ? '${e.title.substring(0, 12)}…' : e.title,
                                       ],
                                 values: charts!.eventsCompliance.map((e) => e.eligible.toDouble()).toList(),
-                                color: const Color(0xFF248A52),
+                                color: colors.success,
                               ),
                             ),
                           ),
@@ -171,16 +179,16 @@ class _DashboardPageState extends State<DashboardPage> {
                   },
                 ),
               ],
-              const SizedBox(height: 24),
+              const SizedBox(height: Space.xl),
               Card(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Padding(
-                      padding: const EdgeInsets.all(20),
+                      padding: const EdgeInsets.all(Space.lg),
                       child: Row(
                         children: [
-                          const Expanded(child: Text('Recent events', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700))),
+                          const Expanded(child: SectionTitle('Recent events')),
                           TextButton(onPressed: widget.onOpenEvents, child: const Text('View all')),
                         ],
                       ),
@@ -188,7 +196,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     divider,
                     if (events.isEmpty)
                       Padding(
-                        padding: const EdgeInsets.all(32),
+                        padding: const EdgeInsets.all(Space.xxl),
                         child: Text(isAdmin
                             ? 'No events yet. Create the first training event.'
                             : 'No events assigned to you yet — your NMEDA administrator will assign your session before the event date.'),
@@ -198,25 +206,32 @@ class _DashboardPageState extends State<DashboardPage> {
                         scrollDirection: Axis.horizontal,
                         child: DataTable(
                           showCheckboxColumn: false,
-                          columns: const [
-                            DataColumn(label: Text('Event')),
-                            DataColumn(label: Text('Date')),
-                            DataColumn(label: Text('CEU hours')),
-                            DataColumn(label: Text('Presenter')),
-                            DataColumn(label: Text('Status')),
-                            DataColumn(label: Text('')),
+                          columns: [
+                            const DataColumn(label: Text('Event')),
+                            const DataColumn(label: Text('Date')),
+                            const DataColumn(label: Text('CEU hours')),
+                            const DataColumn(label: Text('Presenter')),
+                            const DataColumn(label: Text('Status')),
+                            DataColumn(label: Semantics(label: 'Open', child: const Text(''))),
                           ],
                           rows: events
                               .map(
                                 (event) => DataRow(
                                   onSelectChanged: (_) => openEvent(event),
                                   cells: [
-                                    DataCell(SizedBox(width: 260, child: Text(event.title, style: const TextStyle(fontWeight: FontWeight.w600)))),
+                                    DataCell(ConstrainedBox(
+                                      constraints: const BoxConstraints(minWidth: 260, maxWidth: 360),
+                                      child: Text(
+                                        event.title,
+                                        style: theme.textTheme.bodyMedium
+                                            ?.copyWith(fontWeight: FontWeight.w600),
+                                      ),
+                                    )),
                                     DataCell(Text(formatDate(event.eventDate))),
                                     DataCell(Text(event.ceuHours.toStringAsFixed(1))),
                                     DataCell(Text(event.presenterName ?? 'Not assigned')),
                                     DataCell(_statusBadge(event.status)),
-                                    DataCell(IconButton(tooltip: 'Open event', onPressed: () => openEvent(event), icon: const Icon(Icons.arrow_forward))),
+                                    DataCell(IconButton(tooltip: 'Open ${event.title}', onPressed: () => openEvent(event), icon: const Icon(Icons.arrow_forward))),
                                   ],
                                 ),
                               )

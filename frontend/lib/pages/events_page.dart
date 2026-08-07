@@ -43,12 +43,17 @@ class _EventsPageState extends State<EventsPage> {
         setState(() => events = result.map((item) => TrainingEvent.fromJson(item as Map<String, dynamic>)).toList());
       }
     } catch (exception) {
-      if (mounted) setState(() => error = exception.toString());
+      if (mounted) {
+        final message = humanizeError(exception);
+        setState(() => error = message);
+        announceToScreenReader(context, message);
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final isAdmin = widget.session.user!.isAdmin;
     final searching = search.text.trim().isNotEmpty;
     return Padding(
@@ -73,7 +78,7 @@ class _EventsPageState extends State<EventsPage> {
                     ),
                 ],
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: Space.lg),
               Row(
                 children: [
                   Expanded(
@@ -83,17 +88,17 @@ class _EventsPageState extends State<EventsPage> {
                       decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search events'),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  IconButton.filledTonal(tooltip: 'Refresh', onPressed: load, icon: const Icon(Icons.refresh)),
+                  const SizedBox(width: Space.xs + 2),
+                  IconButton.filledTonal(tooltip: 'Refresh the event list', onPressed: load, icon: const Icon(Icons.refresh)),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: Space.md),
               Expanded(
                 child: Card(
                   child: error != null
                       ? ErrorPanel(message: error!, onRetry: load)
                       : events == null
-                          ? const LoadingPanel()
+                          ? const LoadingPanel(label: 'Loading events')
                           : events!.isEmpty
                               ? Center(
                                   child: Column(
@@ -114,7 +119,7 @@ class _EventsPageState extends State<EventsPage> {
                                       ),
                                       if (isAdmin && !searching)
                                         Padding(
-                                          padding: const EdgeInsets.only(bottom: 24),
+                                          padding: const EdgeInsets.only(bottom: Space.xl),
                                           child: ElevatedButton.icon(
                                             onPressed: () => context.go('/create'),
                                             icon: const Icon(Icons.add),
@@ -128,24 +133,31 @@ class _EventsPageState extends State<EventsPage> {
                                   child: SingleChildScrollView(
                                     scrollDirection: Axis.horizontal,
                                     child: DataTable(
-                                      columns: const [
-                                        DataColumn(label: Text('Event')),
-                                        DataColumn(label: Text('Date')),
-                                        DataColumn(label: Text('Location')),
-                                        DataColumn(label: Text('Presenter')),
-                                        DataColumn(label: Text('Status')),
-                                        DataColumn(label: Text('')),
+                                      columns: [
+                                        const DataColumn(label: Text('Event')),
+                                        const DataColumn(label: Text('Date')),
+                                        const DataColumn(label: Text('Location')),
+                                        const DataColumn(label: Text('Presenter')),
+                                        const DataColumn(label: Text('Status')),
+                                        DataColumn(label: Semantics(label: 'Open', child: const Text(''))),
                                       ],
                                       rows: events!
                                           .map(
                                             (event) => DataRow(
                                               cells: [
-                                                DataCell(SizedBox(width: 280, child: Text(event.title, style: const TextStyle(fontWeight: FontWeight.w600)))),
+                                                DataCell(ConstrainedBox(
+                                                  constraints: const BoxConstraints(minWidth: 280, maxWidth: 380),
+                                                  child: Text(
+                                                    event.title,
+                                                    style: theme.textTheme.bodyMedium
+                                                        ?.copyWith(fontWeight: FontWeight.w600),
+                                                  ),
+                                                )),
                                                 DataCell(Text(formatDate(event.eventDate))),
                                                 DataCell(Text(event.location ?? 'Remote / TBD')),
                                                 DataCell(Text(event.presenterName ?? 'Not assigned')),
                                                 DataCell(_statusBadge(event.status)),
-                                                DataCell(IconButton(tooltip: 'Open event', onPressed: () => widget.onOpen(event), icon: const Icon(Icons.arrow_forward))),
+                                                DataCell(IconButton(tooltip: 'Open ${event.title}', onPressed: () => widget.onOpen(event), icon: const Icon(Icons.arrow_forward))),
                                               ],
                                             ),
                                           )
