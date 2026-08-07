@@ -7,6 +7,7 @@ import urllib.error
 API = "http://localhost:8000/api"
 FRONT = "http://127.0.0.1:8090"
 checks = []
+skipped = []
 
 
 def req(method, path, token=None, body=None, raw=False, content_type="application/json"):
@@ -40,6 +41,17 @@ def upload(path, token, filename, content_bytes):
 def check(name, ok, detail=""):
     checks.append((name, ok, detail))
     print(("PASS" if ok else "FAIL"), name, detail)
+
+
+def skip(name, why):
+    """Record a check that could not run on this machine's configuration.
+
+    Kept out of `checks` so it neither passes nor fails the run, but printed
+    loudly — a silently skipped check reads as a passing one, which is how a
+    smoke test ends up green while covering less than it claims.
+    """
+    skipped.append((name, why))
+    print("SKIP", name, "—", why)
 
 
 # 1. Frontend serves the app
@@ -121,13 +133,43 @@ check("generate certificate", status == 200 and cert["certificate_number"], cert
 status, pdf = req("GET", f"/events/{eid}/certificates/{cert['id']}/download", token, raw=True)
 check("download certificate PDF", status == 200 and pdf[:4] == b"%PDF", f"{len(pdf)} bytes")
 
-# 9. Send certificate email (log mode)
-status, sent = req("POST", f"/events/{eid}/certificates/{ids[0]}/send", token)
-check("send certificate email (log mode)", status == 200 and sent["sent_at"])
+# 9. Send certificate email.
+#
+# Delivery depends on how this machine is configured, not on the code under
+# test: with EMAIL_DELIVERY_MODE=log it always succeeds, but pointed at a real
+# provider the seeded @example.com recipients are rejected outright (Resend
+# refuses them by policy), and the API correctly answers 502. Treat that as a
+# skip rather than a failure, so a developer with real SMTP credentials in
+# .env still gets to run the remaining twenty checks.
+delivery_configured = True
+try:
+    status, sent = req("POST", f"/events/{eid}/certificates/{ids[0]}/send", token)
+    check("send certificate email", status == 200 and sent["sent_at"])
+except urllib.error.HTTPError as e:
+    if e.code == 502:
+        delivery_configured = False
+        skip(
+            "send certificate email",
+            "mail provider rejected the seeded @example.com recipient — "
+            "set EMAIL_DELIVERY_MODE=log in backend/.env to exercise this path",
+        )
+    else:
+        raise
 
 # 10. Distribute test/survey invites
-status, dist = req("POST", f"/events/{eid}/distribute", token)
-check("distribute invites", dist["sent"] == 2 and not dist["failed"], str(dist))
+if delivery_configured:
+    status, dist = req("POST", f"/events/{eid}/distribute", token)
+    check("distribute invites", dist["sent"] == 2 and not dist["failed"], str(dist))
+else:
+    # The report still has to come back itemized even when every send fails —
+    # that is the shape the UI renders its retry list from.
+    status, dist = req("POST", f"/events/{eid}/distribute", token)
+    check(
+        "distribute reports per-recipient failures",
+        dist["failed"] == 2 and len(dist["recipients"]) == 2
+        and all(r["reason"] for r in dist["recipients"]),
+        f"{dist['failed']} failed, each with a reason",
+    )
 
 # 11. QR codes
 status, png = req("GET", f"/events/{eid}/test-qr", token, raw=True)
@@ -166,4 +208,10 @@ except urllib.error.HTTPError as e:
 
 failed = [c for c in checks if not c[1]]
 print(f"\n{len(checks) - len(failed)}/{len(checks)} checks passed")
+if skipped:
+    # Repeated at the end because the SKIP line scrolled past twenty checks
+    # ago, and "21/21 passed" on its own would overstate what just ran.
+    print(f"{len(skipped)} skipped on this machine's configuration:")
+    for name, why in skipped:
+        print(f"  - {name}: {why}")
 raise SystemExit(1 if failed else 0)
