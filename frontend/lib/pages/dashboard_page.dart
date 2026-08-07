@@ -112,12 +112,40 @@ class _DashboardPageState extends State<DashboardPage> {
                 builder: (context, constraints) {
                   final columns = constraints.maxWidth >= 1100 ? 5 : constraints.maxWidth >= 620 ? 2 : 1;
                   final width = (constraints.maxWidth - (columns - 1) * Space.sm) / columns;
+                  // Ordered by what the reader can act on, not by what is
+                  // easiest to count. "Pending review" is the only number that
+                  // represents work waiting for a person, and it used to sit
+                  // third and inert while "Total events" — a figure nobody acts
+                  // on — led the page. Anything with somewhere to go is now
+                  // clickable, so the number is a route into the work rather
+                  // than a read-only fact.
+                  // Every role still sees every number — a presenter losing
+                  // sight of the compliance figures would be a step backwards.
+                  // Only the *link* is role-aware: the Certificate Center is
+                  // admin-only, so making those cards tappable for a presenter
+                  // would just bounce them off the router's guard.
                   final cards = [
-                    StatCard(label: 'Total events', value: '${data.totalEvents}', icon: Icons.event_available_outlined, color: navy),
-                    StatCard(label: 'Upcoming', value: '${data.upcomingEvents}', icon: Icons.calendar_month_outlined, color: teal),
-                    StatCard(label: 'Pending review', value: '${data.pendingReviews}', icon: Icons.fact_check_outlined, color: gold),
-                    StatCard(label: 'Certificates sent', value: '${data.certificatesSent}', icon: Icons.send_outlined, color: colors.accentAlt),
+                    _ActionableStat(
+                      onTap: isAdmin ? () => context.go('/certificates') : null,
+                      hint: 'Opens the Certificate Center',
+                      child: StatCard(label: 'Pending review', value: '${data.pendingReviews}', icon: Icons.fact_check_outlined, color: gold),
+                    ),
+                    _ActionableStat(
+                      onTap: widget.onOpenEvents,
+                      hint: 'Opens Events',
+                      child: StatCard(label: 'Upcoming', value: '${data.upcomingEvents}', icon: Icons.calendar_month_outlined, color: teal),
+                    ),
+                    _ActionableStat(
+                      onTap: isAdmin ? () => context.go('/certificates') : null,
+                      hint: 'Opens the Certificate Center',
+                      child: StatCard(label: 'Certificates sent', value: '${data.certificatesSent}', icon: Icons.send_outlined, color: colors.accentAlt),
+                    ),
                     StatCard(label: 'Compliance rate', value: '${data.complianceRate.toStringAsFixed(1)}%', icon: Icons.insights_outlined, color: colors.success),
+                    _ActionableStat(
+                      onTap: widget.onOpenEvents,
+                      hint: 'Opens Events',
+                      child: StatCard(label: 'Total events', value: '${data.totalEvents}', icon: Icons.event_available_outlined, color: navy),
+                    ),
                   ];
                   return Wrap(spacing: Space.sm, runSpacing: Space.sm, children: cards.map((card) => SizedBox(width: width, child: card)).toList());
                 },
@@ -160,16 +188,31 @@ class _DashboardPageState extends State<DashboardPage> {
                           SizedBox(
                             width: constraints.maxWidth,
                             child: ChartCard(
-                              title: 'Eligible attendees by event',
+                              // Plots the rate, not the raw count. Charting
+                              // `eligible` alone threw away the denominator, so
+                              // a flawless 3-of-3 event drew a shorter bar than
+                              // a struggling 10-of-50 and the chart ranked
+                              // events by size while appearing to rank them by
+                              // compliance. The counts survive in the
+                              // description, which is also what a screen reader
+                              // gets instead of the bars.
+                              title: 'Eligibility rate by event',
                               child: SimpleBarChart(
-                                description: 'Eligible attendees by event',
+                                description: 'Eligibility rate by event. '
+                                    '${[
+                                      for (final e in charts!.eventsCompliance)
+                                        '${e.title}: ${e.eligible} of ${e.total} eligible',
+                                    ].join('. ')}.',
                                 labels: complianceChartLabels.length == charts!.eventsCompliance.length
                                     ? complianceChartLabels
                                     : [
                                         for (final e in charts!.eventsCompliance)
                                           e.title.length > 14 ? '${e.title.substring(0, 12)}…' : e.title,
                                       ],
-                                values: charts!.eventsCompliance.map((e) => e.eligible.toDouble()).toList(),
+                                values: [
+                                  for (final e in charts!.eventsCompliance)
+                                    e.total == 0 ? 0.0 : e.eligible / e.total * 100,
+                                ],
                                 color: colors.success,
                               ),
                             ),
@@ -254,3 +297,36 @@ StatusBadge _statusBadge(String status) {
   return StatusBadge(label, tone: tone);
 }
 
+
+/// Makes a [StatCard] a real destination.
+///
+/// A wrapper rather than a parameter on StatCard because the shared widgets are
+/// being reworked in parallel; this keeps the change local. `button: true` with
+/// `excludeSemantics: false` keeps the card's own label and value readable while
+/// adding the affordance, so a screen reader announces the number *and* that it
+/// leads somewhere.
+class _ActionableStat extends StatelessWidget {
+  const _ActionableStat({required this.child, required this.onTap, required this.hint});
+
+  final Widget child;
+
+  /// Null when this role has nowhere to go, in which case the card renders as
+  /// the plain read-only figure it always was — no button semantics, no hover,
+  /// nothing promising an action that the router would refuse.
+  final VoidCallback? onTap;
+  final String hint;
+
+  @override
+  Widget build(BuildContext context) {
+    if (onTap == null) return child;
+    return Semantics(
+      button: true,
+      hint: hint,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: child,
+      ),
+    );
+  }
+}
