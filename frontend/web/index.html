@@ -12,6 +12,44 @@
   <meta name="theme-color" content="#17324D">
   <title>CEU Compliance Portal</title>
   <link rel="manifest" href="manifest.json">
+  <style>
+    /* The bundle is ~3 MB of JS plus a CanvasKit wasm payload, and until the
+       engine paints its first frame the page is plain white with no sign that
+       anything is happening. On a hotel or clinic connection that reads as a
+       broken link — particularly on the public QR pages, where the visitor has
+       no reason to trust the URL and every reason to give up and walk away.
+       This splash is inert markup that costs no extra request, and Flutter
+       removes it once it takes over the page. */
+    body { margin: 0; background: #F5F7FA; }
+    #boot {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1.25rem;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      color: #17324D;
+    }
+    #boot .spinner {
+      width: 2.5rem;
+      height: 2.5rem;
+      border: 3px solid #DCE3EA;
+      border-top-color: #17324D;
+      border-radius: 50%;
+      animation: boot-spin 900ms linear infinite;
+    }
+    /* Respect a user who has asked the system to reduce motion: they still get
+       the reassurance, just without a spinning element. */
+    @media (prefers-reduced-motion: reduce) {
+      #boot .spinner { animation: none; border-top-color: #DCE3EA; }
+    }
+    @keyframes boot-spin { to { transform: rotate(360deg); } }
+    #boot .label { font-size: 0.95rem; letter-spacing: 0.01em; }
+    #boot .slow { font-size: 0.85rem; color: #667085; max-width: 22rem;
+                  text-align: center; opacity: 0; transition: opacity 300ms; }
+  </style>
 </head>
 <body>
   <!-- Without this a browser with JavaScript blocked shows a permanently blank
@@ -25,6 +63,56 @@
          reload this page, or contact your NMEDA administrator for help.</p>
     </div>
   </noscript>
+  <!-- aria-live so a screen reader announces the wait instead of sitting in
+       silence on what is, to it, an empty document. -->
+  <div id="boot" role="status" aria-live="polite">
+    <div class="spinner"></div>
+    <div class="label">Loading the CEU Compliance Portal&hellip;</div>
+    <div class="slow" id="boot-slow">
+      Still loading. A slow connection can take a moment the first time &mdash;
+      later visits are cached and start faster.
+    </div>
+  </div>
+  <script>
+    (function () {
+      var boot = document.getElementById('boot');
+      var removed = false;
+
+      // Flutter appends its view to <body>; it does NOT clear the document. A
+      // full-viewport overlay therefore has to take itself down, or it sits on
+      // top of the loaded app and swallows every click.
+      function dismiss() {
+        if (removed || !boot) return;
+        removed = true;
+        boot.parentNode.removeChild(boot);
+      }
+
+      // The documented signal, dispatched once the engine paints.
+      window.addEventListener('flutter-first-frame', dismiss);
+      document.addEventListener('flutter-first-frame', dismiss);
+
+      // Belt and braces: if that event is ever renamed or missed, watch for the
+      // view element instead. Being wrong here means a permanently unusable
+      // portal, which is far worse than the splash vanishing a frame early.
+      if (window.MutationObserver) {
+        var observer = new MutationObserver(function () {
+          if (document.querySelector('flutter-view, flt-glass-pane')) {
+            dismiss();
+            observer.disconnect();
+          }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+
+      // Only mention slowness once it is actually slow. Saying it immediately
+      // would teach people to expect a slow app; saying it never leaves someone
+      // on a bad connection wondering whether to reload.
+      setTimeout(function () {
+        var slow = document.getElementById('boot-slow');
+        if (slow && !removed) slow.style.opacity = '1';
+      }, 4000);
+    })();
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

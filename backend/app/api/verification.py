@@ -54,6 +54,24 @@ def verify_certificate(
         return VerificationOut(valid=False)
     link = certificate.event_attendee
     event = link.event
+    if certificate.is_revoked:
+        # The whole reason revocation keeps the row: somebody is holding this
+        # PDF and has to be told it was withdrawn. Answering "not found" would
+        # read as a typo in the number and send them back to the document.
+        #
+        # Enough to identify the document they are holding, and no more:
+        # ceu_hours and the instructor are the credit claim itself, and a
+        # revoked certificate makes none.
+        return VerificationOut(
+            valid=False,
+            status="revoked",
+            certificate_number=certificate.certificate_number,
+            attendee_name=link.attendee.full_name,
+            event_title=event.title,
+            event_date=event.event_date,
+            generated_at=certificate.generated_at,
+            revoked_at=certificate.revoked_at,
+        )
     return VerificationOut(
         valid=True,
         certificate_number=certificate.certificate_number,
@@ -76,6 +94,19 @@ def download_verified_certificate(
     certificate = _load(db, certificate_number)
     if not certificate:
         raise HTTPException(status_code=404, detail="Certificate not found")
+    if certificate.is_revoked:
+        # Refused before anything else, so a revoked certificate can never pick
+        # up a downloaded_at either. The file is kept for the record and an
+        # admin can still retrieve it from the authenticated download route;
+        # what must not happen is this route handing a withdrawn credential to
+        # the public as though it were current.
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "This certificate has been revoked and is no longer available. "
+                "Contact the issuing organization if you believe this is a mistake."
+            ),
+        )
     path = Path(certificate.pdf_path)
     if not storage.ensure_local(path):
         # Deliberately no re-render here. Rebuilding a PDF is orders of

@@ -11,6 +11,14 @@ commits to two things about retention, and this module implements both:
    ``purge_expired`` finds events whose whole retention window has elapsed and
    removes their database rows and stored files.
 
+Revocation, not deletion
+------------------------
+The one remedy that used to cut through the floor -- an admin withdrawing a
+certificate issued to the wrong person -- now marks the certificate revoked
+instead of deleting it (see ``app.api.compliance``). A revoked certificate is
+an ordinary retained record here: ``is_retained`` treats it exactly like a live
+one, and the purge below eventually destroys it with everything else.
+
 Deliberately NOT scheduled
 --------------------------
 Nothing here is wired to a scheduler, a startup hook, or a background task, and
@@ -68,6 +76,19 @@ def is_issued(certificate: Certificate) -> bool:
     ones the retention commitment is about.
     """
     return certificate.sent_at is not None or certificate.downloaded_at is not None
+
+
+def is_retained(event: TrainingEvent, certificate: Certificate, today: date | None = None) -> bool:
+    """Is this one certificate still inside the retention window?
+
+    The per-certificate form of the ``retention_block`` question, for the
+    roster-removal path: an issued certificate that is still retained may be
+    revoked but never deleted, while one whose window has elapsed carries no
+    obligation and can go. Revocation does not change the answer -- a revoked
+    certificate is retained for exactly as long as a live one, which is the
+    point of revoking instead of deleting.
+    """
+    return (today or date.today()) < retained_until(event, [certificate])
 
 
 def retained_until(event: TrainingEvent, certificates: list[Certificate]) -> date:
@@ -145,6 +166,7 @@ class PurgedEvent:
     attendees: int
     certificates: int
     certificates_issued: int
+    certificates_revoked: int = 0
 
     def as_details(self) -> dict:
         return {
@@ -154,6 +176,10 @@ class PurgedEvent:
             "attendees": self.attendees,
             "certificates": self.certificates,
             "certificates_issued": self.certificates_issued,
+            # Revoked certificates are purged like any other record, but they
+            # are the ones somebody was told had been withdrawn, so the audit
+            # entry names how many of them this run destroyed.
+            "certificates_revoked": self.certificates_revoked,
             "retention_years": settings.retention_years,
         }
 
@@ -253,6 +279,7 @@ def purge_expired(
             attendees=attendee_count,
             certificates=len(certificates),
             certificates_issued=sum(1 for certificate in certificates if is_issued(certificate)),
+            certificates_revoked=sum(1 for certificate in certificates if certificate.is_revoked),
         )
         report.events.append(entry)
         if not apply:

@@ -419,6 +419,10 @@ String humanizeError(Object exception) {
 StatusBadge lifecycleBadge(String status) {
   final label = status.replaceAll('_', ' ').toUpperCase();
   final tone = switch (status) {
+    // Revoked is a withdrawal, not a stage of delivery: the record is kept for
+    // the retention period and the number publicly answers "revoked", so it
+    // has to read as the one alarming state in the column.
+    'revoked' => BadgeTone.danger,
     'downloaded' || 'delivered' || 'sent' => BadgeTone.success,
     'generated' || 'approved' => BadgeTone.info,
     'eligible' => BadgeTone.warning,

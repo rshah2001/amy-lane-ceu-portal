@@ -18,6 +18,10 @@ class _CompliancePageState extends State<CompliancePage> {
   List<ComplianceRecord>? records;
   final selected = <int>{};
   final search = TextEditingController();
+  // Lives with the page rather than with the dialog: disposing it as the
+  // dialog pops tears the controller out from under a TextField that is still
+  // rebuilding through the exit animation.
+  final removalReason = TextEditingController();
   String filter = 'all';
   String? error;
   bool working = false;
@@ -31,6 +35,7 @@ class _CompliancePageState extends State<CompliancePage> {
   @override
   void dispose() {
     search.dispose();
+    removalReason.dispose();
     super.dispose();
   }
 
@@ -199,41 +204,72 @@ class _CompliancePageState extends State<CompliancePage> {
   /// read off the wrong sheet, or that a pre-scoping upload merged in from
   /// another event. Their certificate and this event's test/survey results go
   /// with them; they stay on every other event they attended.
+  ///
+  /// Unless the certificate already reached them, in which case it is revoked
+  /// rather than deleted: the record is kept for seven years under the CEU
+  /// retention commitment, and the number publicly verifies as revoked from
+  /// then on. The dialog has to say that plainly, because it is permanent and
+  /// anyone holding the PDF will see it.
   Future<void> remove(ComplianceRecord record) async {
     final theme = Theme.of(context);
     final alreadyIssued = _certificateReachedHolder(record);
+    removalReason.clear();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('Remove ${record.fullName} from this event?'),
+        title: Text(
+          alreadyIssued
+              ? 'Remove ${record.fullName} and revoke their certificate?'
+              : 'Remove ${record.fullName} from this event?',
+        ),
         content: SizedBox(
-          width: 440,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'They come off this event only — other events they attended are unchanged.',
-              ),
-              const SizedBox(height: Space.xs + 2),
-              Text(
-                'Their post-test score and survey response for this event go too. Uploading the '
-                'sign-in sheet again brings the person back, but not those results.',
-                style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.textSecondary),
-              ),
-              if (alreadyIssued) ...[
+          width: 460,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'They come off this event only — other events they attended are unchanged.',
+                ),
                 const SizedBox(height: Space.xs + 2),
                 Text(
-                  record.certificateSentAt != null
-                      ? 'Their certificate was already emailed. Removing them deletes it, and the '
-                          'certificate number will no longer verify in the public portal.'
-                      : 'They already downloaded their certificate. Removing them deletes it, and the '
-                          'certificate number will no longer verify in the public portal.',
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(color: theme.portal.danger, fontWeight: FontWeight.w600),
+                  'Their post-test score and survey response for this event go too. Uploading the '
+                  'sign-in sheet again brings the person back, but not those results.',
+                  style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.textSecondary),
                 ),
+                if (alreadyIssued) ...[
+                  const SizedBox(height: Space.md),
+                  Text(
+                    record.certificateSentAt != null
+                        ? 'Their certificate was already emailed, so it is revoked rather than deleted.'
+                        : 'They already downloaded their certificate, so it is revoked rather than deleted.',
+                    style: theme.textTheme.bodyMedium
+                        ?.copyWith(color: theme.portal.danger, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: Space.xs),
+                  Text(
+                    'The certificate record is kept for seven years under our CEU retention '
+                    'commitment — it is not deleted. From now on the certificate number verifies '
+                    'publicly as REVOKED, which is what anyone holding the PDF will be shown. '
+                    'This cannot be undone, and the certificate cannot be re-issued or re-sent.',
+                    style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.textSecondary),
+                  ),
+                  const SizedBox(height: Space.md),
+                  TextField(
+                    controller: removalReason,
+                    maxLength: 500,
+                    minLines: 1,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      labelText: 'Reason (optional)',
+                      helperText: 'Recorded on the certificate and in the audit log.',
+                      hintText: 'e.g. name read off the wrong sign-in sheet',
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
         actions: [
@@ -244,22 +280,38 @@ class _CompliancePageState extends State<CompliancePage> {
               foregroundColor: Colors.white,
             ),
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Remove attendee'),
+            child: Text(alreadyIssued ? 'Revoke and remove' : 'Remove attendee'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
+    final note = removalReason.text.trim();
     final messenger = ScaffoldMessenger.of(context);
     setState(() => working = true);
     try {
       // The dialog already spelled out the consequence, so an explicitly named
       // attendee is removed even when their certificate reached them.
-      await widget.session.api.delete(
-        '/events/${widget.event.id}/compliance/${record.id}${alreadyIssued ? '?include_sent=true' : ''}',
-      );
+      final query = <String>[
+        if (alreadyIssued) 'include_sent=true',
+        if (alreadyIssued && note.isNotEmpty) 'reason=${Uri.encodeQueryComponent(note)}',
+      ];
+      final result = await widget.session.api.delete(
+        '/events/${widget.event.id}/compliance/${record.id}'
+        '${query.isEmpty ? '' : '?${query.join('&')}'}',
+      ) as Map<String, dynamic>;
       if (!mounted) return;
-      messenger.showSnackBar(SnackBar(content: Text('${record.fullName} removed from this event.')));
+      // Revoked and removed are different outcomes and the admin has to be
+      // told which one they got: one destroyed a record, the other kept it.
+      final wasRevoked = ((result['revoked'] as List?) ?? const []).isNotEmpty;
+      final message = wasRevoked
+          ? '${record.fullName} removed. Their certificate is revoked and now verifies '
+              'publicly as revoked; the record is kept.'
+          : '${record.fullName} removed from this event.';
+      messenger.showSnackBar(
+        SnackBar(content: Text(message), duration: Duration(seconds: wasRevoked ? 8 : 4)),
+      );
+      announceToScreenReader(context, message);
       await load();
     } catch (exception) {
       if (!mounted) return;
@@ -303,7 +355,11 @@ class _CompliancePageState extends State<CompliancePage> {
     // The filters narrow what's on screen, but this clears the whole roster —
     // say so plainly rather than letting the visible count imply otherwise.
     final filtered = filter != 'all' || search.text.trim().isNotEmpty;
-    final sentCount = all.where(_certificateReachedHolder).length;
+    // Already-revoked rows are not offered again: there is nothing left to
+    // revoke, and their row is retained whatever the admin ticks.
+    final sentCount = all
+        .where((record) => _certificateReachedHolder(record) && !record.certificateRevoked)
+        .length;
     var includeSent = false;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -342,11 +398,14 @@ class _CompliancePageState extends State<CompliancePage> {
                     value: includeSent,
                     onChanged: (value) => setDialogState(() => includeSent = value ?? false),
                     title: Text(
-                      'Also remove the $sentCount attendee${sentCount == 1 ? '' : 's'} who already has their certificate',
+                      'Also revoke the certificate${sentCount == 1 ? '' : 's'} of the $sentCount '
+                      'attendee${sentCount == 1 ? '' : 's'} who already has one',
                       style: theme.textTheme.bodySmall?.copyWith(color: theme.portal.danger),
                     ),
                     subtitle: Text(
-                      'Those certificate numbers stop verifying in the public portal. Left unchecked, they stay on the roster.',
+                      'Those certificates are revoked, not deleted: the records are kept for seven '
+                      'years and the numbers verify publicly as REVOKED from then on. This cannot '
+                      'be undone. Left unchecked, they stay on the roster untouched.',
                       style: theme.textTheme.labelMedium?.copyWith(
                         color: theme.portal.textSecondary,
                         fontWeight: FontWeight.w400,
@@ -380,13 +439,18 @@ class _CompliancePageState extends State<CompliancePage> {
       if (!mounted) return;
       final removed = result['removed'] ?? 0;
       final kept = ((result['kept_with_issued_certificates'] as List?) ?? const []).length;
+      final revoked = ((result['revoked'] as List?) ?? const []).length;
+      // Three outcomes, and they are not interchangeable: removed is gone,
+      // revoked is kept-but-withdrawn, kept is untouched.
+      final message = '$removed attendee${removed == 1 ? '' : 's'} removed.'
+          '${revoked == 0 ? '' : ' $revoked certificate${revoked == 1 ? '' : 's'} revoked — '
+              'those records are kept and now verify publicly as revoked.'}'
+          '${kept == 0 ? '' : ' $kept kept — they already have their certificates.'}';
       messenger.showSnackBar(SnackBar(
-        content: Text(
-          '$removed attendee${removed == 1 ? '' : 's'} removed.'
-          '${kept == 0 ? '' : ' $kept kept — they already have their certificates.'}',
-        ),
-        duration: Duration(seconds: kept == 0 ? 4 : 8),
+        content: Text(message),
+        duration: Duration(seconds: kept == 0 && revoked == 0 ? 4 : 8),
       ));
+      announceToScreenReader(context, message);
       selected.clear();
       await load();
     } catch (exception) {
@@ -644,9 +708,21 @@ class _CompliancePageState extends State<CompliancePage> {
                                                         onPressed: working ? null : () => revoke(record),
                                                         icon: Icon(Icons.undo, size: 18, color: colors.danger),
                                                       ),
+                                                    // Already revoked: there is
+                                                    // nothing left to remove —
+                                                    // the row is retained for
+                                                    // seven years by design —
+                                                    // so the action says why
+                                                    // instead of no-op'ing.
                                                     IconButton(
-                                                      tooltip: 'Remove ${record.fullName} from this event',
-                                                      onPressed: working ? null : () => remove(record),
+                                                      tooltip: record.certificateRevoked
+                                                          ? '${record.fullName}\'s certificate is revoked. '
+                                                              'The record is kept for seven years and '
+                                                              'cannot be removed.'
+                                                          : 'Remove ${record.fullName} from this event',
+                                                      onPressed: working || record.certificateRevoked
+                                                          ? null
+                                                          : () => remove(record),
                                                       icon: Icon(
                                                         Icons.person_remove_outlined,
                                                         size: 18,

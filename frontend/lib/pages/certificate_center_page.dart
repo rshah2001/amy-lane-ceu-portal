@@ -371,7 +371,12 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final visibleRecords = records?.where((record) => record.approved || record.eligible).toList();
+    // Revoked rows are neither approved nor eligible any more, but dropping
+    // them here would hide a certificate that still exists and still has a
+    // number people can look up. They stay, marked.
+    final visibleRecords = records
+        ?.where((record) => record.approved || record.eligible || record.certificateRevoked)
+        .toList();
     return Padding(
       padding: pagePadding,
       child: Center(
@@ -472,9 +477,24 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                                                   ?.copyWith(fontWeight: FontWeight.w600),
                                             ),
                                           )),
-                                          DataCell(StatusBadge(record.approved ? 'APPROVED' : 'AWAITING APPROVAL', tone: record.approved ? BadgeTone.success : BadgeTone.warning)),
+                                          DataCell(
+                                            record.certificateRevoked
+                                                ? lifecycleBadge('revoked')
+                                                : StatusBadge(
+                                                    record.approved ? 'APPROVED' : 'AWAITING APPROVAL',
+                                                    tone: record.approved
+                                                        ? BadgeTone.success
+                                                        : BadgeTone.warning,
+                                                  ),
+                                          ),
                                           DataCell(Text(record.certificateNumber ?? 'Not generated')),
-                                          DataCell(Text(record.certificateSentAt == null ? 'Not sent' : formatDateTime(record.certificateSentAt!))),
+                                          DataCell(Text(
+                                            record.certificateRevoked
+                                                ? 'Revoked ${formatDateTime(record.certificateRevokedAt!)}'
+                                                : record.certificateSentAt == null
+                                                    ? 'Not sent'
+                                                    : formatDateTime(record.certificateSentAt!),
+                                          )),
                                           DataCell(
                                             Wrap(
                                               spacing: 8,
@@ -495,8 +515,17 @@ class _CertificateCenterPageState extends State<CertificateCenterPage> {
                                                   icon: const Icon(Icons.workspace_premium_outlined, size: 18),
                                                   label: Text(record.certificateNumber == null ? 'Generate' : 'Generated'),
                                                 ),
+                                                // A revoked certificate keeps
+                                                // its number and its sent_at,
+                                                // so "Resend" would otherwise
+                                                // look available — and the
+                                                // server refuses it with a 409.
                                                 ElevatedButton.icon(
-                                                  onPressed: record.certificateNumber == null || workingId == record.id ? null : () => send(record),
+                                                  onPressed: record.certificateNumber == null ||
+                                                          record.certificateRevoked ||
+                                                          workingId == record.id
+                                                      ? null
+                                                      : () => send(record),
                                                   icon: const Icon(Icons.send_outlined, size: 18),
                                                   label: Text(record.certificateSentAt == null ? 'Send' : 'Resend'),
                                                 ),

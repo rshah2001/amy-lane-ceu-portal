@@ -33,6 +33,17 @@ from app.services import storage
 router = APIRouter(prefix="/events/{event_id}/certificates", tags=["Certificates"])
 TEMPLATE_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg"}
 
+# A revoked certificate keeps its row and its number for the retention period,
+# which means every route that would re-animate it has to say no: one number
+# identifies one document, and that document has been withdrawn. Re-issuing to
+# the same person on the same event is deliberately not offered here — the
+# revocation is the record, and reversing it by hand would leave two
+# contradictory answers in the public portal.
+REVOKED_DETAIL = (
+    "This attendee's certificate for this event was revoked. Revoked "
+    "certificates are kept on record and cannot be re-issued or re-sent."
+)
+
 
 def get_link(db: Session, event_id: int, link_id: int) -> EventAttendee:
     link = db.scalar(
@@ -196,6 +207,8 @@ def generate_certificate(
     if not link.approved:
         raise HTTPException(status_code=409, detail="Attendee must be approved first")
     if link.certificate:
+        if link.certificate.is_revoked:
+            raise HTTPException(status_code=409, detail=REVOKED_DETAIL)
         return link.certificate
     number = make_certificate_number(event_id)
     path = generate_certificate_pdf(link, number)
@@ -235,6 +248,8 @@ def send_certificate(
     certificate = link.certificate
     if not certificate:
         raise HTTPException(status_code=409, detail="Generate the certificate first")
+    if certificate.is_revoked:
+        raise HTTPException(status_code=409, detail=REVOKED_DETAIL)
     if not link.attendee.email:
         raise HTTPException(status_code=409, detail="Attendee has no email address")
     try:
@@ -300,6 +315,11 @@ def issue_certificate_manually(
     event = get_visible_event(db, event_id, current_user)
     attendee = match_or_create_attendee(db, event.id, payload.full_name, str(payload.email))
     link = get_or_create_link(db, event.id, attendee.id)
+    # Checked before anything is written: this person already had a certificate
+    # on this event and it was withdrawn, so a manual issue would silently hand
+    # back the revoked one (event_attendee_id is unique).
+    if link.certificate is not None and link.certificate.is_revoked:
+        raise HTTPException(status_code=409, detail=REVOKED_DETAIL)
     if not link.approved:
         link.approved = True
         link.approved_by_id = current_user.id
@@ -438,7 +458,9 @@ def send_all_generated(
     details: list[str] = []
     for link in links:
         certificate = link.certificate
-        if not certificate or certificate.sent_at:
+        # A revoked certificate is skipped silently rather than counted as a
+        # failure: it is not waiting to be sent, it is finished.
+        if not certificate or certificate.sent_at or certificate.is_revoked:
             continue
         if not link.attendee.email:
             skipped += 1
@@ -482,6 +504,12 @@ def download_certificate(
     )
     if not certificate:
         raise HTTPException(status_code=404, detail="Certificate not found")
+    # Revoked certificates stay downloadable *here* on purpose. This route is
+    # admin-only and is how the retained document is retrieved for the record —
+    # an auditor asking what was issued to whom needs the actual PDF, and
+    # withholding it from the record owner would defeat retaining it. The public
+    # download route refuses them; that is where the credential would be handed
+    # to someone who might rely on it.
     path = ensure_pdf(certificate.event_attendee, certificate)
     return FileResponse(
         path,

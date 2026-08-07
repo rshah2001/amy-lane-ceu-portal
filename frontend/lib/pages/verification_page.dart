@@ -156,6 +156,53 @@ class _ResultCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colors = theme.portal;
     final valid = result['valid'] == true;
+    // Three outcomes, not two. A revoked certificate exists and was really
+    // issued — telling its holder "no certificate matches that number" would
+    // send them back to a document that is no longer worth anything.
+    final revokedAt = DateTime.tryParse(result['revoked_at']?.toString() ?? '');
+    final revoked = !valid && result['status'] == 'revoked';
+    if (revoked) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(Space.xl),
+          child: Semantics(
+            liveRegion: true,
+            container: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    ExcludeSemantics(child: Icon(Icons.gpp_bad, color: colors.danger, size: 30)),
+                    const SizedBox(width: Space.sm),
+                    Heading(
+                      child: Text('Certificate revoked', style: theme.textTheme.titleMedium),
+                    ),
+                    const Spacer(),
+                    lifecycleBadge('revoked'),
+                  ],
+                ),
+                const SizedBox(height: Space.sm),
+                Text(
+                  'This certificate was issued and has since been withdrawn. It no longer '
+                  'confirms CEU credit. Contact the issuing organization if you believe this '
+                  'is a mistake.',
+                  style: theme.textTheme.bodyMedium?.copyWith(color: colors.danger),
+                ),
+                const SizedBox(height: Space.md),
+                if (result['attendee_name'] != null)
+                  _row('Issued to', result['attendee_name'].toString()),
+                if (result['event_title'] != null)
+                  _row('Course', result['event_title'].toString()),
+                _row('Certificate #', result['certificate_number']?.toString() ?? '—'),
+                if (revokedAt != null)
+                  _row('Revoked', DateFormat.yMMMMd().format(revokedAt.toLocal())),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     if (!valid) {
       return Card(
         child: Padding(

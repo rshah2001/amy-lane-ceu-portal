@@ -46,6 +46,11 @@ def lifecycle_status(link: EventAttendee) -> str:
     """Single human-facing status spanning the whole certificate lifecycle."""
     certificate = link.certificate
     if certificate:
+        # Revocation outranks every delivery milestone: a withdrawn certificate
+        # may well have been emailed and downloaded, and saying "downloaded"
+        # about it would read as "in good standing".
+        if certificate.is_revoked:
+            return "revoked"
         if certificate.downloaded_at:
             return "downloaded"
         if certificate.delivered_at:

@@ -190,6 +190,10 @@ class ComplianceRow(BaseModel):
     certificate_number: str | None = None
     certificate_sent_at: datetime | None = None
     certificate_downloaded_at: datetime | None = None
+    # Set once the certificate has been withdrawn. The row and its number are
+    # kept for the retention period, so the UI has to be able to tell a live
+    # certificate from a revoked one rather than inferring it from absence.
+    certificate_revoked_at: datetime | None = None
 
 
 class ApprovalRequest(BaseModel):
@@ -208,6 +212,11 @@ class RosterRemovalResult(BaseModel):
     # emailed, or downloaded by the holder from the public portal. Removing
     # those revokes a live credential, so it needs the include_sent override.
     kept_with_issued_certificates: list[str] = Field(default_factory=list)
+    # Attendees whose certificate was revoked rather than deleted, because it
+    # had reached them and is still inside the retention window. They are off
+    # the roster in every sense that counts, but their record stays. Reported
+    # separately from `removed` so the admin is told what actually happened.
+    revoked: list[str] = Field(default_factory=list)
 
 
 class ManualIssueRequest(BaseModel):
@@ -407,6 +416,15 @@ class BulkActionResult(BaseModel):
 
 
 class VerificationOut(BaseModel):
+    """Public answer to "is this certificate real?".
+
+    Three outcomes, not two: valid, revoked, and unknown. A revoked
+    certificate comes back ``valid=False`` with ``status="revoked"`` and a
+    ``revoked_at`` date, because somebody holding the PDF has to be told it no
+    longer counts — "no certificate matches that number" would tell them the
+    opposite of the truth.
+    """
+
     valid: bool
     certificate_number: str | None = None
     attendee_name: str | None = None
@@ -416,6 +434,7 @@ class VerificationOut(BaseModel):
     course_instructor: str | None = None
     generated_at: datetime | None = None
     status: str | None = None
+    revoked_at: datetime | None = None
 
 
 class NotificationOut(ORMModel):

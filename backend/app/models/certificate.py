@@ -27,6 +27,20 @@ class Certificate(Base):
     # their PDF through the public verification portal.
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Revocation. An issued certificate inside its retention window is never
+    # hard-deleted -- the attestation in docs/data-storage-and-retention-
+    # confirmation.md commits to keeping it for seven years. Withdrawing it
+    # (a certificate issued to the wrong person, say) sets these three columns
+    # instead: the row, its PDF, its email logs and its audit trail all survive
+    # until the retention purge removes them with everything else.
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    revoked_reason: Mapped[str | None] = mapped_column(String(500))
 
     event_attendee = relationship("EventAttendee", back_populates="certificate")
     email_logs = relationship("CertificateEmailLog", back_populates="certificate", cascade="all, delete-orphan")
+
+    @property
+    def is_revoked(self) -> bool:
+        """Withdrawn: it must not verify, be re-sent, or be handed out again."""
+        return self.revoked_at is not None
