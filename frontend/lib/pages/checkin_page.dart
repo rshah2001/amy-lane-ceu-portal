@@ -127,6 +127,10 @@ class _CheckinPageState extends State<CheckinPage> {
     if (nextSteps['test_token'] != null) {
       addButton('Continue to the post-test', Icons.quiz, () {
         Navigator.of(context).push(MaterialPageRoute(
+          // No inviteNonce, deliberately: this is the walk-in path. Check-in
+          // is itself a shared QR link and the person may not be on the roster
+          // at all, so there is no per-attendee secret to carry — attribution
+          // falls back to the name and address just typed above.
           builder: (_) => PublicTestPage(
             api: widget.api,
             token: nextSteps['test_token'] as String,

@@ -1,17 +1,19 @@
 """Per-attendee invite nonces: proof a public submission came from our email.
 
-The problem this exists for: ``/public/surveys/{token}`` is a *shared* link --
-it is printed on a QR sheet and shown on a slide -- so the only thing a
-submission could offer as identity was a name and, optionally, an email
-address. ``surveys._completion_basis`` already refuses to credit a submission
-that names an attendee without carrying their address, but an address is not a
-secret: anybody who knows a colleague's registered email could still complete
-that colleague's survey and move their compliance state.
+The problem this exists for: ``/public/surveys/{token}`` and
+``/public/tests/{token}`` are *shared* links -- printed on a QR sheet and shown
+on a slide -- so the only thing a submission could offer as identity was a name
+and an email address. ``surveys._completion_basis`` already refuses to credit a
+submission that names an attendee without carrying their address, but an
+address is not a secret: anybody who knows a colleague's registered email could
+still complete that colleague's survey, or sit their scored post-test, and move
+their compliance state.
 
 The nonce closes that for the people we email. Each ``EventAttendee`` gets one
 the first time an invite is sent to it, ``emailer`` embeds it in that
-attendee's survey link as ``?k=``, and a submission carrying it is credited to
-that attendee no matter what name or address the form was filled in with.
+attendee's post-test and survey links as ``?k=``, and a submission carrying it
+is credited to that attendee no matter what name or address the form was filled
+in with.
 
 Following the token conventions already in this codebase (``checkin_token``,
 ``survey_token``, ``test_token``): a nullable, unique, indexed ``String(120)``
@@ -30,7 +32,9 @@ It departs from those three in two respects, both deliberate:
   routinely, and the link in the *first* email must keep working. Hashing it
   would mean minting a new one per send and silently breaking every invite
   already in somebody's inbox. What it grants is correspondingly narrow --
-  crediting one survey completion on one event -- never portal access.
+  crediting one attendee's survey and post-test completions on one event, with
+  the score they actually earned in the session it was used -- never portal
+  access, and never the ability to name a *different* attendee.
 """
 
 import secrets
@@ -70,7 +74,8 @@ def link_for_nonce(db: Session, event_id: int, nonce: str | None) -> EventAttend
 
     Returns None for anything unrecognised rather than raising: the caller
     falls back to the identity rules that applied before nonces existed, which
-    keeps a mangled or stale link from throwing away real feedback.
+    keeps a mangled or stale link from throwing away real feedback, or a
+    post-test sitting the attendee only gets three of.
     """
     if not nonce or len(nonce) > NONCE_MAX_LENGTH:
         return None

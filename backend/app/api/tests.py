@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,6 +20,7 @@ from app.schemas.common import PublicTestOut, PublicTestSubmission, TestSubmissi
 from app.services.attendee_match import get_or_create_link, match_or_create_attendee
 from app.services.audit import record_audit
 from app.services.compliance import recalculate_event
+from app.services.invites import NONCE_MAX_LENGTH, link_for_nonce
 
 router = APIRouter(tags=["Tests"])
 
@@ -58,6 +59,34 @@ def _credited_result(attempts: list[TestResult]) -> TestResult:
     return max(attempts, key=lambda attempt: Decimal(str(attempt.score)))
 
 
+def _completion_basis(*, via_invite: bool) -> str:
+    """Why a public post-test submission may credit the attendee it resolved to.
+
+    Deliberately the same vocabulary as ``surveys._completion_basis`` -- an
+    admin reading the audit trail should not have to learn two -- but only two
+    of that function's three bases can arise here, and neither of them refuses:
+
+    - ``invite_nonce``: the submission carried the secret from this attendee's
+      own invite email (``?k=``), which nothing on the roster and no colleague
+      who knows their address can produce. This is the only basis that is proof
+      rather than plausibility, and it is the one the identity came *from* --
+      the caller resolves the attendee by nonce, not by the form's name field.
+    - ``email_on_submission``: no usable nonce, so the attendee is whoever
+      ``match_or_create_attendee`` resolves the typed name and address to.
+      Exactly what this endpoint did before nonces existed, and knowingly
+      weaker: a registered address is not a secret. It stays because the
+      printed QR sheet is one shared link for the whole room and has no nonce
+      to offer -- it is a core feature, not a legacy path.
+
+    The survey's third basis (``no_email_on_record``) and its refusal cannot
+    occur here: ``PublicTestSubmission.email`` is mandatory, so a post-test
+    submission always carries an address and there is never a name-only claim
+    on somebody else's record to turn down. The consequence is stated plainly
+    rather than hidden: on the nonce-less link, a known address still credits.
+    """
+    return "invite_nonce" if via_invite else "email_on_submission"
+
+
 def get_test_event(db: Session, token: str) -> TrainingEvent:
     event = db.scalar(select(TrainingEvent).where(TrainingEvent.test_token == token))
     if not event or event.test_mode != "internal":
@@ -86,6 +115,14 @@ def submit_public_test(
     token: str,
     payload: PublicTestSubmission,
     request: Request,
+    k: str | None = Query(
+        default=None,
+        max_length=NONCE_MAX_LENGTH,
+        description=(
+            "Invite nonce from this attendee's own invitation email. Present on "
+            "emailed links only; the shared QR link has none and does not need one."
+        ),
+    ),
     db: Session = Depends(get_db),
     _rate_limit: None = Depends(PublicRateLimit("test", "token")),
 ) -> TestSubmissionResult:
@@ -105,8 +142,26 @@ def submit_public_test(
     score = Decimal(str(round(correct / len(questions) * 100, 2)))
     passed = score >= PASSING_SCORE
 
-    attendee = match_or_create_attendee(db, event.id, payload.full_name, str(payload.email))
-    link = get_or_create_link(db, event.id, attendee.id)
+    # A nonce, when the link came from this attendee's own invite email. An
+    # unrecognised one is treated as absent rather than refused: the fallback
+    # credits nothing it would not have credited before, and a 4xx here would
+    # throw away a sitting the attendee has already spent -- and there are only
+    # three. Whether one was offered, and whether it resolved, is audited below.
+    invited_link = link_for_nonce(db, event.id, k)
+    submitted_email = str(payload.email)
+    if invited_link is not None:
+        # The nonce *is* the identity, so the form's name and email are not
+        # consulted for matching at all -- the same rule the survey path uses,
+        # and it carries more here: this endpoint writes a score, and
+        # match_or_create_attendee would credit whatever address was typed.
+        # A nickname also cannot fork a duplicate roster row this way. What was
+        # typed is still recorded in the audit entry.
+        attendee = invited_link.attendee
+        link = invited_link
+    else:
+        attendee = match_or_create_attendee(db, event.id, payload.full_name, submitted_email)
+        link = get_or_create_link(db, event.id, attendee.id)
+    basis = _completion_basis(via_invite=invited_link is not None)
     previous = list(
         db.scalars(
             select(TestResult)
@@ -155,8 +210,22 @@ def submit_public_test(
             "passed": passed,
             "source": "public_web",
             "client_ip": client_ip(request),
+            # What the form claimed, which on the nonce path is not what was
+            # credited: the endpoint is unauthenticated, so the audit trail is
+            # the only record of who claimed to be whom.
+            "submitted_name": payload.full_name,
+            "submitted_email": submitted_email,
             "attempt": attempts_used + 1,
             "attempts_allowed": MAX_PUBLIC_TEST_ATTEMPTS,
+            "completion_basis": basis,
+            # Both flags, not just the basis: a nonce that was offered and did
+            # not resolve is the fingerprint of a stale or tampered link, and it
+            # is invisible in `completion_basis` alone because the submission
+            # quietly falls back to the older rules. The nonce value itself is
+            # never written here -- it is a credential, and audit rows are read
+            # by anyone who can read the audit log.
+            "invite_nonce_presented": k is not None,
+            "invite_nonce_valid": invited_link is not None,
             # What the event link now carries, which is not this attempt
             # whenever an earlier one scored higher (see _credited_result).
             "credited_result_id": credited.id,

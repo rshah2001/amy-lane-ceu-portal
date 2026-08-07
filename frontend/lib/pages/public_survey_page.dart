@@ -142,7 +142,7 @@ class _PublicSurveyPageState extends State<PublicSurveyPage> {
     try {
       // Identity fields are optional (anonymous feedback is allowed); blanks
       // are sent as null so nothing empty is stored.
-      await widget.api.post('/public/surveys/${widget.token}${_nonceQuery}', {
+      await widget.api.post('/public/surveys/${widget.token}$_nonceQuery', {
         'business_location': businessLocation.text.trim().isEmpty ? null : businessLocation.text.trim(),
         'full_name': name.text.trim().isEmpty ? null : name.text.trim(),
         'email': email.text.trim().isEmpty ? null : email.text.trim(),

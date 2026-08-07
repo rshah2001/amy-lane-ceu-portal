@@ -176,7 +176,7 @@ def _public_link(
     params = {token_param: token, "name": name, "email": email}
     if nonce:
         # The one part of this URL that is not guessable from the roster: it is
-        # what lets the survey endpoint tell "the attendee we emailed" apart
+        # what lets the public endpoints tell "the attendee we emailed" apart
         # from "somebody who knows their address". See app.services.invites.
         params["k"] = nonce
     return f"{settings.public_frontend_url}/?{urlencode(params)}"
@@ -192,10 +192,14 @@ def send_invite_email(
     """Email an attendee their personalized post-test and/or survey links.
 
     ``invite_nonce`` is this attendee's invite secret; when given it rides
-    along on the survey link so their submission can be credited to them
-    without them having to retype the address we already hold. Optional, so
-    that a caller with no roster row (there is none today) still sends a
-    working, if unprivileged, email.
+    along on both *internal* links -- post-test and survey -- so their
+    submissions can be credited to them without them having to retype the
+    address we already hold, and without a colleague who knows that address
+    being able to sit the test in their name. Optional, so that a caller with
+    no roster row (there is none today) still sends a working, if
+    unprivileged, email. External links are somebody else's form and get
+    nothing: the nonce is only meaningful to our own endpoints, and putting it
+    on a third-party URL would hand it to that third party.
     """
     actions: list[tuple[str, str]] = []
     # An internal test link is only worth sending once the test actually has
@@ -203,7 +207,12 @@ def send_invite_email(
     # already apply. Without it the attendee lands on a submittable quiz with
     # nothing in it and no way to finish what the email asked for.
     if event.test_mode == "internal" and event.test_token and event.test_questions:
-        actions.append(("Complete your post-test", _public_link("test", event.test_token, attendee_name, recipient)))
+        actions.append(
+            (
+                "Complete your post-test",
+                _public_link("test", event.test_token, attendee_name, recipient, invite_nonce),
+            )
+        )
     elif event.test_mode == "external" and event.post_test_url:
         actions.append(("Complete your post-test", event.post_test_url))
     if event.survey_mode == "internal" and event.survey_token:

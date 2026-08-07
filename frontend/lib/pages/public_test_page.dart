@@ -9,11 +9,22 @@ class PublicTestPage extends StatefulWidget {
     super.key,
     required this.api,
     required this.token,
+    this.inviteNonce,
     this.prefillName,
     this.prefillEmail,
   });
   final ApiClient api;
   final String token;
+
+  /// Per-attendee secret from the `k` parameter of an emailed invite link.
+  ///
+  /// When present the server credits the attendee it was minted for and skips
+  /// name matching entirely, so neither a nickname typed into the form nor a
+  /// colleague's address can move somebody else's score. Absent for the
+  /// printed QR sheet and for the walk-in check-in hand-off, which are one
+  /// shared link for the whole room — those still work, they just fall back to
+  /// matching on the address supplied.
+  final String? inviteNonce;
   final String? prefillName;
   final String? prefillEmail;
 
@@ -74,6 +85,15 @@ class _PublicTestPageState extends State<PublicTestPage> {
     announceToScreenReader(context, message);
   }
 
+  /// `?k=<nonce>` when this page was opened from an emailed invite, else empty.
+  /// Encoded rather than interpolated raw, so a mangled link comes back as a
+  /// clean 422 from the server's length bound instead of a malformed URL.
+  String get _nonceQuery {
+    final nonce = widget.inviteNonce;
+    if (nonce == null || nonce.isEmpty) return '';
+    return '?k=${Uri.encodeQueryComponent(nonce)}';
+  }
+
   Future<void> submit() async {
     if (!validateAndFocusFirstError(context, formKey, [nameField, emailField])) return;
     final questions = test!['questions'] as List;
@@ -88,7 +108,7 @@ class _PublicTestPageState extends State<PublicTestPage> {
       error = null;
     });
     try {
-      final response = await widget.api.post('/public/tests/${widget.token}', {
+      final response = await widget.api.post('/public/tests/${widget.token}$_nonceQuery', {
         'full_name': name.text.trim(),
         'email': email.text.trim(),
         'answers': selected,
