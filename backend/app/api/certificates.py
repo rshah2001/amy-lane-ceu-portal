@@ -25,7 +25,7 @@ from app.services.certificates import (
     make_certificate_number,
     reissue_certificate_pdf,
 )
-from app.services.compliance import recalculate_event
+from app.services.compliance import outstanding_certificate_count, recalculate_event
 from app.services.csv_import import save_upload
 from app.services.emailer import send_certificate_email
 from app.services import storage
@@ -80,16 +80,7 @@ def maybe_mark_event_completed(db: Session, event: TrainingEvent, current_user: 
     )
     if not approved_count:
         return False
-    unsent_count = db.scalar(
-        select(func.count(EventAttendee.id))
-        .outerjoin(Certificate, Certificate.event_attendee_id == EventAttendee.id)
-        .where(
-            EventAttendee.event_id == event.id,
-            EventAttendee.approved.is_(True),
-            or_(Certificate.id.is_(None), Certificate.sent_at.is_(None)),
-        )
-    )
-    if unsent_count:
+    if outstanding_certificate_count(db, event.id):
         return False
     event.status = "completed"
     record_audit(
