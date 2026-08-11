@@ -16,6 +16,7 @@ from app.models.uploaded_file import UploadedFile
 from app.models.user import User
 from app.schemas.common import UploadedFileOut
 from app.services.audit import record_audit
+from app.services.compliance import awaiting_decision_count, outstanding_certificate_count
 from app.services import storage
 from app.services.csv_import import (
     SCORE_BASES,
@@ -220,8 +221,47 @@ async def upload_document(
         parse_errors=errors,
     )
     db.add(uploaded)
-    event.status = "review"
+    # A completed event has had every approved certificate sent, and
+    # maybe_mark_event_completed promises it never un-completes itself. This
+    # line used to break that promise silently: any upload at all — including
+    # a re-upload that imported nothing — flipped the event back to "review"
+    # with no record of why, so an event Amy had signed off reappeared in the
+    # work queue looking unfinished.
+    #
+    # A late sign-in sheet that really does bring new people is different:
+    # those attendees need certificates, so the event genuinely is not done and
+    # reopening is right. The rule is therefore "reopen only when the file
+    # actually imported something", and the reopen is audited so the status
+    # change can be traced back to the file that caused it.
+    reopened = False
+    if event.status == "completed":
+        # Reopen only if the import actually left work to do. A late sign-in
+        # sheet bringing new people means new certificates, so the event
+        # genuinely is not finished. A corrected survey file for attendees who
+        # already hold their certificates changes nothing about who is owed
+        # one, and putting the event back in the queue with nothing in it is
+        # how a completed event starts looking unfinished for no reason.
+        if outstanding_certificate_count(db, event_id) or awaiting_decision_count(db, event_id):
+            event.status = "review"
+            reopened = True
+    else:
+        event.status = "review"
     db.flush()
+    if reopened:
+        record_audit(
+            db,
+            "event.reopened",
+            "training_event",
+            event_id,
+            current_user,
+            event_id,
+            {
+                "trigger": "upload_after_completion",
+                "file_type": file_type,
+                "filename": file.filename,
+                "rows": row_count,
+            },
+        )
     record_audit(
         db,
         "file.uploaded",

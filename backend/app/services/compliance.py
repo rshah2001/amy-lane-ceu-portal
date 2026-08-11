@@ -1,8 +1,9 @@
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
 from app.services.identity import is_valid_email
 
@@ -107,3 +108,50 @@ def recalculate_event(db: Session, event_id: int) -> list[EventAttendee]:
     db.flush()
     return links
 
+
+
+def outstanding_certificate_count(db: Session, event_id: int) -> int:
+    """Approved attendees on this event whose certificate has not reached them.
+
+    The single definition of "is there still work here", shared by the two
+    places that need opposite answers to the same question: certificate
+    sending uses it to decide an event is finished, and a later upload uses it
+    to decide whether that finished event has become unfinished again. Kept in
+    one place so the two can never drift into disagreeing about what "done"
+    means.
+
+    Counts both the approved attendee with no certificate at all and the one
+    whose certificate was generated but never sent — neither has it in hand.
+    """
+    return db.scalar(
+        select(func.count(EventAttendee.id))
+        .outerjoin(Certificate, Certificate.event_attendee_id == EventAttendee.id)
+        .where(
+            EventAttendee.event_id == event_id,
+            EventAttendee.approved.is_(True),
+            or_(Certificate.id.is_(None), Certificate.sent_at.is_(None)),
+        )
+    )
+
+
+def awaiting_decision_count(db: Session, event_id: int) -> int:
+    """Attendees who have earned a certificate but nobody has approved yet.
+
+    Deliberately NOT part of ``outstanding_certificate_count``: the two answer
+    different questions. Completion asks "is everything that was approved now
+    delivered", and an admin who declines to approve somebody must still be
+    able to finish the event. Reopening asks "did this file create work", and
+    an eligible attendee nobody has ruled on is exactly that.
+
+    Eligible-but-unapproved rather than simply certificate-less, because an
+    attendee who failed the post-test will never be eligible; counting them
+    would reopen the event on every upload and leave it stuck in review with
+    nothing that could ever clear it.
+    """
+    return db.scalar(
+        select(func.count(EventAttendee.id)).where(
+            EventAttendee.event_id == event_id,
+            EventAttendee.eligible.is_(True),
+            EventAttendee.approved.is_(False),
+        )
+    )
