@@ -28,6 +28,32 @@ DEFAULT_CERTIFICATE_FIELDS: dict[str, dict] = {
     "course_instructor": {"x": 220, "y": 332, "size": 13, "align": "left", "color": "#2f78b5", "font": "Helvetica"},
 }
 
+# The NMEDA-branded CAMS Lunch & Learn PDF ships with the code, and it is the
+# certificate NMEDA actually issues. It is therefore the default for any event
+# that has not had its own template uploaded: without a default, an event
+# created through the portal renders on the built-in generic design and the
+# attendee receives a "Certificate of Completion" that is not NMEDA's
+# certificate at all. There is no UI for uploading a per-event template, so
+# every portal-created event hit that path.
+BUNDLED_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "assets" / "cams_lunch_learn_cert.pdf"
+
+
+def default_template_path() -> str | None:
+    """The bundled branded template, or None if it is absent from the build."""
+    return str(BUNDLED_TEMPLATE_PATH) if BUNDLED_TEMPLATE_PATH.is_file() else None
+
+
+def effective_template_path(event) -> str | None:
+    """The template an event renders on: its own upload, else the bundled one.
+
+    Resolved at issue time rather than written onto the event row, so the
+    default follows the deployment. The bundled asset's absolute path differs
+    between a developer's machine and the server, and freezing one of those
+    into the database is how an event ends up pointing at a file that does not
+    exist in the environment that has to render it.
+    """
+    return event.certificate_template_path or default_template_path()
+
 
 # ReportLab stamps a creation timestamp and a random document id into every PDF
 # unless it is told to be invariant. A certificate of record has to re-issue
@@ -90,7 +116,7 @@ def content_from_link(link: EventAttendee) -> CertificateContent:
         event_title=event.title,
         certificate_title=event.certificate_title,
         ceu_hours=str(event.ceu_hours),
-        template_path=event.certificate_template_path,
+        template_path=effective_template_path(event),
         layout=event.certificate_fields or {},
         source="live",
     )
@@ -110,7 +136,7 @@ def certificate_snapshot(link: EventAttendee) -> dict:
         "ceu_hours": str(link.event.ceu_hours),
         "certificate_title": link.event.certificate_title,
         "template_version": link.event.certificate_template_version,
-        "template_path": link.event.certificate_template_path,
+        "template_path": effective_template_path(link.event),
         # Field placement is part of the document's appearance, so it belongs in
         # the snapshot too. Snapshots written before this key existed fall back
         # to the event's current layout (see content_from_snapshot).
@@ -339,6 +365,21 @@ def render_certificate_pdf(
     # copy was lost (ephemeral disk); with local-only storage it is a plain
     # existence check.
     if template_path and Path(template_path).suffix.lower() == ".pdf":
+        if not storage.ensure_local(Path(template_path)) and Path(template_path).name == BUNDLED_TEMPLATE_PATH.name:
+            # A snapshot (or a seeded row) written on another machine records
+            # that machine's absolute path to the bundled template. The file
+            # itself ships with the code, so recover it from the build rather
+            # than falling through to a different design under the same
+            # certificate number. Same bytes, same document.
+            recovered = default_template_path()
+            if recovered:
+                logger.info(
+                    "Certificate %s references the bundled template at %s, which is not present here; "
+                    "rendering on the copy shipped with this build.",
+                    certificate_number,
+                    template_path,
+                )
+                template_path = recovered
         if storage.ensure_local(Path(template_path)):
             result = _overlay_on_pdf(template_path, content.values, content.layout, output, preview)
         else:

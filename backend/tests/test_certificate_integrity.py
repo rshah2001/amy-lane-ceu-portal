@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.models.certificate import Certificate
 from app.models.event_attendee import EventAttendee
+from app.services import certificates as certificates_service
 from app.services.certificates import (
     certificate_snapshot,
     content_from_snapshot,
@@ -62,6 +63,27 @@ def issued(client, admin, db_session):
     }
 
 
+@pytest.fixture()
+def builtin_design(monkeypatch):
+    """Render on the built-in design instead of the bundled NMEDA template.
+
+    The branded template carries the course name in its artwork and prints only
+    the attendee name, date and instructor, so it cannot show whether the
+    *title* came from the snapshot or from the live row. The built-in design
+    prints a title, which is what the tests below read.
+    """
+    monkeypatch.setattr(
+        certificates_service, "BUNDLED_TEMPLATE_PATH", Path("/nonexistent/no-such-template.pdf")
+    )
+
+
+@pytest.fixture()
+def issued_builtin(builtin_design, issued):
+    """``issued``, with the branded default disabled before the certificate is
+    generated (fixture order matters: the patch has to precede the render)."""
+    return issued
+
+
 def pdf_text(data: bytes | Path) -> str:
     source = data if isinstance(data, Path) else __import__("io").BytesIO(data)
     return "\n".join(page.extract_text() or "" for page in PdfReader(source).pages)
@@ -95,8 +117,9 @@ class TestSnapshotRegeneration:
         assert content_from_snapshot(snapshot) is not None
 
     def test_reissued_pdf_is_the_document_that_was_issued(
-        self, client, admin, db_session, issued
+        self, client, admin, db_session, issued_builtin
     ):
+        issued = issued_builtin
         original_bytes = issued["path"].read_bytes()
         assert ORIGINAL_TITLE in pdf_text(issued["path"])
 
@@ -144,8 +167,9 @@ class TestLiveFallback:
     """Rows issued before snapshots existed have nothing to render from."""
 
     def test_missing_snapshot_falls_back_to_live_data_and_logs_it(
-        self, db_session, issued, caplog
+        self, db_session, issued_builtin, caplog
     ):
+        issued = issued_builtin
         certificate = issued["certificate"]
         certificate.event_snapshot = {}
         db_session.commit()

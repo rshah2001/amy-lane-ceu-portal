@@ -2,7 +2,6 @@ import os
 import secrets
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -14,8 +13,6 @@ from app.models.training_event import TrainingEvent
 from app.models.user import User
 from app.services.audit import record_audit
 from app.services.survey_template import get_survey_template
-
-CAMS_TEMPLATE = Path(__file__).resolve().parent / "assets" / "cams_lunch_learn_cert.pdf"
 
 
 def upsert_user(db, email: str, full_name: str, role: str, password: str) -> tuple[User, bool]:
@@ -54,7 +51,6 @@ def main() -> None:
         admin, admin_created = upsert_user(
             db, "admin@example.com", "Avery Compliance", "admin", admin_password
         )
-        template_path = str(CAMS_TEMPLATE) if CAMS_TEMPLATE.exists() else None
         if not db.scalar(
             select(TrainingEvent).where(
                 TrainingEvent.title == "Comprehensive Automotive Mobility Solutions"
@@ -69,7 +65,6 @@ def main() -> None:
                 presenter_name="Monique McGivney",
                 course_instructor="Monique McGivney",
                 certificate_title="Lunch & Learn Course",
-                certificate_template_path=template_path,
                 status="review",
                 created_by_id=admin.id,
                 assigned_presenter_id=None,
@@ -84,8 +79,6 @@ def main() -> None:
                 event.test_token = uuid4().hex
             if not event.checkin_token:
                 event.checkin_token = uuid4().hex
-            if not event.certificate_template_path and template_path:
-                event.certificate_template_path = template_path
             if not event.survey_questions:
                 event.survey_questions = get_survey_template(db)
         db.commit()
