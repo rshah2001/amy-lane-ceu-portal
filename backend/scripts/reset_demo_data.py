@@ -74,9 +74,15 @@ def main() -> int:
     with SessionLocal() as db:
         actor = _actor(db, args.actor)
         events = list(db.scalars(select(TrainingEvent).order_by(TrainingEvent.id)))
-        if not events:
+        if not events and not args.attendees:
             print("No events; nothing to reset.")
             return 0
+        if not events:
+            # --attendees has to stay reachable after the events are gone: the
+            # directory outlives them (an Attendee has no event FK), so a reset
+            # run without the flag leaves every person behind with no way to
+            # clear them on a second pass.
+            print("No events left. Clearing the attendee directory only.\n")
 
         planned = []
         for event in events:
@@ -100,17 +106,25 @@ def main() -> int:
         total_certificates = sum(len(c) for _, c, _, _ in planned)
         total_issued = sum(issued for _, _, _, issued in planned)
 
+        directory = list(db.scalars(select(Attendee))) if args.attendees else []
+
         print(f"Database: {settings.database_url.split('@')[-1]}")
-        print(f"{'DELETING' if args.apply else 'WOULD DELETE'} {len(planned)} event(s):\n")
-        for event, certificates, attendees, issued in planned:
+        if planned:
+            print(f"{'DELETING' if args.apply else 'WOULD DELETE'} {len(planned)} event(s):\n")
+            for event, certificates, attendees, issued in planned:
+                print(
+                    f"  #{event.id:<4} {event.title[:44]:<46} {event.event_date}  "
+                    f"attendees={attendees:<4} certificates={len(certificates):<4} issued={issued}"
+                )
             print(
-                f"  #{event.id:<4} {event.title[:44]:<46} {event.event_date}  "
-                f"attendees={attendees:<4} certificates={len(certificates):<4} issued={issued}"
+                f"\n  totals: {total_certificates} certificate(s), "
+                f"{total_issued} already issued to a holder"
             )
-        print(
-            f"\n  totals: {total_certificates} certificate(s), "
-            f"{total_issued} already issued to a holder"
-        )
+        if args.attendees:
+            print(
+                f"\n  attendee directory: {len(directory)} person record(s) "
+                f"{'to be removed' if not args.apply else 'being removed'}"
+            )
 
         if total_issued and not args.force:
             print(
